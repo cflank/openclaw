@@ -1,0 +1,12 @@
+{
+  "agent_id": "social_analyst",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "social_signal_analysis",
+    "allowed_mcp": ["market-news-mcp"],
+    "allowed_skills": ["acp-router", "owner-policy-enforcer"],
+    "gate_responsibility": "review_gate_input_quality"
+  },
+  "fail_closed": true
+}
+

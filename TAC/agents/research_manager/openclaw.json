@@ -1,0 +1,12 @@
+{
+  "agent_id": "research_manager",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "orchestration_and_release",
+    "allowed_mcp": [],
+    "allowed_skills": ["session-logs", "released-handoff-guard"],
+    "gate_responsibility": "review_gate_publish_gate_release"
+  },
+  "fail_closed": true
+}
+

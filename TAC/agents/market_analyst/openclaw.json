@@ -1,0 +1,12 @@
+{
+  "agent_id": "market_analyst",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "market_analysis",
+    "allowed_mcp": ["market-cn-mcp", "market-us-mcp", "market-crypto-mcp"],
+    "allowed_skills": ["acp-router", "fallback-chain-orchestrator"],
+    "gate_responsibility": "review_gate_input_quality"
+  },
+  "fail_closed": true
+}
+

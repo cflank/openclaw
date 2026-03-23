@@ -1,0 +1,29 @@
+{
+  // Batch-1 baseline multi-agent config for TAC
+  agents: {
+    defaults: {
+      workspace: "./TAC/agents/research_manager/workspace",
+    },
+    list: [
+      { id: "market_analyst", workspace: "./TAC/agents/market_analyst/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/market_analyst/agent" },
+      { id: "fundamental_analyst", workspace: "./TAC/agents/fundamental_analyst/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/fundamental_analyst/agent" },
+      { id: "news_analyst", workspace: "./TAC/agents/news_analyst/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/news_analyst/agent" },
+      { id: "social_analyst", workspace: "./TAC/agents/social_analyst/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/social_analyst/agent" },
+      { id: "bull_researcher", workspace: "./TAC/agents/bull_researcher/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/bull_researcher/agent" },
+      { id: "bear_researcher", workspace: "./TAC/agents/bear_researcher/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/bear_researcher/agent" },
+      { id: "research_manager", default: true, workspace: "./TAC/agents/research_manager/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/research_manager/agent" },
+      { id: "trader", workspace: "./TAC/agents/trader/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/trader/agent" },
+      { id: "risky_analyst", workspace: "./TAC/agents/risky_analyst/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/risky_analyst/agent" },
+      { id: "safe_analyst", workspace: "./TAC/agents/safe_analyst/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/safe_analyst/agent" },
+      { id: "neutral_analyst", workspace: "./TAC/agents/neutral_analyst/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/neutral_analyst/agent" },
+      { id: "risk_manager", workspace: "./TAC/agents/risk_manager/workspace", agentDir: "${OPENCLAW_STATE_DIR}/agents/risk_manager/agent" },
+    ],
+  },
+  tac: {
+    failClosedDefault: true,
+    policyPath: "./TAC/config/policy/owner-tool-skill-policy.json",
+    fallbackPath: "./TAC/config/policy/fallback-policy.json",
+    gateThresholdsPath: "./TAC/config/policy/gate-thresholds.json",
+  },
+}
+

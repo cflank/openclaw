@@ -1,0 +1,12 @@
+{
+  "agent_id": "bull_researcher",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "debate_bull",
+    "allowed_mcp": [],
+    "allowed_skills": ["oracle", "diffs"],
+    "gate_responsibility": "review_gate_debate_consistency"
+  },
+  "fail_closed": true
+}
+

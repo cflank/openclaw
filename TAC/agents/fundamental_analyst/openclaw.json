@@ -1,0 +1,12 @@
+{
+  "agent_id": "fundamental_analyst",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "fundamental_analysis",
+    "allowed_mcp": ["market-cn-mcp", "market-us-mcp"],
+    "allowed_skills": ["acp-router", "fallback-chain-orchestrator"],
+    "gate_responsibility": "review_gate_input_quality"
+  },
+  "fail_closed": true
+}
+

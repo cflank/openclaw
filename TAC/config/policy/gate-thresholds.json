@@ -1,0 +1,30 @@
+{
+  "policy_version": "1.0.0",
+  "gates": {
+    "review_gate": {
+      "required_artifacts": [
+        "intake_brief",
+        "frontline_packet",
+        "debate_packet",
+        "trade_plan"
+      ],
+      "fail_closed": true
+    },
+    "risk_gate": {
+      "required_artifacts": [
+        "risk_verdict"
+      ],
+      "required_verdict_schema_valid": true,
+      "fail_closed": true
+    },
+    "publish_gate": {
+      "required_artifacts": [
+        "final_report"
+      ],
+      "final_report_must_be_released": true,
+      "block_event": "PUBLISH_GATE_BLOCKED",
+      "fail_closed": true
+    }
+  }
+}
+

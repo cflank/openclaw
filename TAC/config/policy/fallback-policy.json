@@ -1,0 +1,36 @@
+{
+  "policy_version": "1.0.0",
+  "fixed_order_required": true,
+  "markets": {
+    "CN": [
+      "tushare",
+      "akshare",
+      "pytdx"
+    ],
+    "HK": [
+      "akshare",
+      "tushare"
+    ],
+    "US": [
+      "yfinance",
+      "finnhub"
+    ],
+    "US_FINANCIALS": [
+      "sec_edgar",
+      "finnhub",
+      "yfinance"
+    ],
+    "CRYPTO": [
+      "binance",
+      "coingecko"
+    ]
+  },
+  "events": {
+    "step_used": "FALLBACK_STEP_USED",
+    "exhausted": "FALLBACK_EXHAUSTED",
+    "critical_data_blocked": "CRITICAL_DATA_UNAVAILABLE_BLOCKED",
+    "degraded_entered": "DEGRADED_MODE_ENTERED",
+    "degraded_exited": "DEGRADED_MODE_EXITED"
+  }
+}
+

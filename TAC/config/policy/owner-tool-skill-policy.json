@@ -1,0 +1,84 @@
+{
+  "policy_version": "1.0.0",
+  "fail_closed_default": true,
+  "events": {
+    "owner_violation": "OWNER_VIOLATION_BLOCKED",
+    "tool_owner_mismatch": "TOOL_OWNER_MISMATCH_BLOCKED",
+    "skill_denied": "SKILL_DENIED_BY_POLICY",
+    "non_released_handoff": "NON_RELEASED_HANDOFF_BLOCKED",
+    "publish_gate_blocked": "PUBLISH_GATE_BLOCKED",
+    "critical_data_blocked": "CRITICAL_DATA_UNAVAILABLE_BLOCKED",
+    "degraded_entered": "DEGRADED_MODE_ENTERED",
+    "degraded_exited": "DEGRADED_MODE_EXITED"
+  },
+  "global_rules": {
+    "news_owner_exclusive_tools": [
+      "get_event_window",
+      "get_news_digest"
+    ],
+    "block_non_released_cross_agent_handoff": true,
+    "block_publish_when_final_report_not_released": true,
+    "allow_warning_only_for_events": [
+      "FALLBACK_STEP_USED"
+    ]
+  },
+  "owners": [
+    {
+      "owner_id": "market-cn-mcp",
+      "allowed_tools": [
+        "get_cn_quote",
+        "get_hk_quote",
+        "get_cn_fundamentals",
+        "get_hk_fundamentals"
+      ],
+      "forbidden_tools": [
+        "get_event_window",
+        "get_news_digest"
+      ]
+    },
+    {
+      "owner_id": "market-us-mcp",
+      "allowed_tools": [
+        "get_us_quote",
+        "get_us_fundamentals",
+        "get_us_financials"
+      ],
+      "forbidden_tools": [
+        "get_event_window",
+        "get_news_digest"
+      ]
+    },
+    {
+      "owner_id": "market-crypto-mcp",
+      "allowed_tools": [
+        "get_crypto_quote",
+        "get_crypto_market_snapshot"
+      ],
+      "forbidden_tools": [
+        "get_event_window",
+        "get_news_digest"
+      ]
+    },
+    {
+      "owner_id": "market-news-mcp",
+      "allowed_tools": [
+        "get_event_window",
+        "get_news_digest",
+        "get_news_timeline"
+      ],
+      "forbidden_tools": [
+        "get_cn_quote",
+        "get_hk_quote",
+        "get_us_quote",
+        "get_crypto_quote",
+        "get_cn_fundamentals",
+        "get_us_financials"
+      ]
+    }
+  ],
+  "skill_constraints": {
+    "max_allowed_skills_per_agent": 2,
+    "deny_unknown_skills": true
+  }
+}
+

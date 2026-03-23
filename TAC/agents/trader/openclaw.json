@@ -1,0 +1,12 @@
+{
+  "agent_id": "trader",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "plan_chain_primary",
+    "allowed_mcp": [],
+    "allowed_skills": ["oracle", "critical-data-availability-guard"],
+    "gate_responsibility": "plan_chain_owner"
+  },
+  "fail_closed": true
+}
+

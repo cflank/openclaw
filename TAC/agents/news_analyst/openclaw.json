@@ -1,0 +1,12 @@
+{
+  "agent_id": "news_analyst",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "news_analysis",
+    "allowed_mcp": ["market-news-mcp"],
+    "allowed_skills": ["acp-router", "owner-policy-enforcer"],
+    "gate_responsibility": "review_gate_input_quality"
+  },
+  "fail_closed": true
+}
+

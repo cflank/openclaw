@@ -1,0 +1,12 @@
+{
+  "agent_id": "risky_analyst",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "risk_chain_aggressive_view",
+    "allowed_mcp": [],
+    "allowed_skills": ["model-usage", "critical-data-availability-guard"],
+    "gate_responsibility": "risk_gate_input"
+  },
+  "fail_closed": true
+}
+

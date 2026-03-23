@@ -1,0 +1,12 @@
+{
+  "agent_id": "risk_manager",
+  "workspace": "./workspace",
+  "policy": {
+    "owner_scope": "risk_chain_decision_owner",
+    "allowed_mcp": [],
+    "allowed_skills": ["session-logs", "owner-policy-enforcer"],
+    "gate_responsibility": "risk_gate_release_owner"
+  },
+  "fail_closed": true
+}
+
