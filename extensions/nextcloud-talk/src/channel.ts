@@ -1,4 +1,4 @@
-import { describeAccountSnapshot } from "openclaw/plugin-sdk/account-helpers";
+import { describeWebhookAccountSnapshot } from "openclaw/plugin-sdk/account-helpers";
 import { formatAllowFromLowercase } from "openclaw/plugin-sdk/allow-from";
 import {
   adaptScopedAccountAccessor,
@@ -14,9 +14,12 @@ import { createAllowlistProviderRouteAllowlistWarningCollector } from "openclaw/
 import { createChatChannelPlugin } from "openclaw/plugin-sdk/core";
 import { runStoppablePassiveMonitor } from "openclaw/plugin-sdk/extension-shared";
 import {
-  buildBaseChannelStatusSummary,
+  buildWebhookChannelStatusSummary,
+  createComputedAccountStatusAdapter,
+  createDefaultChannelRuntimeState,
+} from "openclaw/plugin-sdk/status-helpers";
+import {
   buildChannelConfigSchema,
-  buildRuntimeAccountStatusSnapshot,
   clearAccountEntryFields,
   DEFAULT_ACCOUNT_ID,
   type ChannelPlugin,
@@ -127,7 +130,7 @@ export const nextcloudTalkPlugin: ChannelPlugin<ResolvedNextcloudTalkAccount> =
         ...nextcloudTalkConfigAdapter,
         isConfigured: (account) => Boolean(account.secret?.trim() && account.baseUrl?.trim()),
         describeAccount: (account) =>
-          describeAccountSnapshot({
+          describeWebhookAccountSnapshot({
             account,
             configured: Boolean(account.secret?.trim() && account.baseUrl?.trim()),
             extra: {
@@ -167,37 +170,24 @@ export const nextcloudTalkPlugin: ChannelPlugin<ResolvedNextcloudTalkAccount> =
         },
       },
       setup: nextcloudTalkSetupAdapter,
-      status: {
-        defaultRuntime: {
-          accountId: DEFAULT_ACCOUNT_ID,
-          running: false,
-          lastStartAt: null,
-          lastStopAt: null,
-          lastError: null,
-        },
+      status: createComputedAccountStatusAdapter<ResolvedNextcloudTalkAccount>({
+        defaultRuntime: createDefaultChannelRuntimeState(DEFAULT_ACCOUNT_ID),
         buildChannelSummary: ({ snapshot }) =>
-          buildBaseChannelStatusSummary(snapshot, {
+          buildWebhookChannelStatusSummary(snapshot, {
             secretSource: snapshot.secretSource ?? "none",
-            mode: "webhook",
           }),
-        buildAccountSnapshot: ({ account, runtime }) => {
-          const configured = Boolean(account.secret?.trim() && account.baseUrl?.trim());
-          return buildRuntimeAccountStatusSnapshot(
-            { runtime },
-            {
-              accountId: account.accountId,
-              name: account.name,
-              enabled: account.enabled,
-              configured,
-              secretSource: account.secretSource,
-              baseUrl: account.baseUrl ? "[set]" : "[missing]",
-              mode: "webhook",
-              lastInboundAt: runtime?.lastInboundAt ?? null,
-              lastOutboundAt: runtime?.lastOutboundAt ?? null,
-            },
-          );
-        },
-      },
+        resolveAccountSnapshot: ({ account }) => ({
+          accountId: account.accountId,
+          name: account.name,
+          enabled: account.enabled,
+          configured: Boolean(account.secret?.trim() && account.baseUrl?.trim()),
+          extra: {
+            secretSource: account.secretSource,
+            baseUrl: account.baseUrl ? "[set]" : "[missing]",
+            mode: "webhook",
+          },
+        }),
+      }),
       gateway: {
         startAccount: async (ctx) => {
           const account = ctx.account;

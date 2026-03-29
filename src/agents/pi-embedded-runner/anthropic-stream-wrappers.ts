@@ -361,8 +361,7 @@ export function createAnthropicFastModeWrapper(
     if (
       model.api !== "anthropic-messages" ||
       model.provider !== "anthropic" ||
-      !isAnthropicPublicApiBaseUrl(model.baseUrl) ||
-      isAnthropicOAuthApiKey(options?.apiKey)
+      !isAnthropicPublicApiBaseUrl(model.baseUrl)
     ) {
       return underlying(model, context, options);
     }
@@ -379,18 +378,4 @@ export function resolveAnthropicFastMode(
   extraParams: Record<string, unknown> | undefined,
 ): boolean | undefined {
   return resolveFastModeParam(extraParams);
-}
-
-export function createBedrockNoCacheWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
-  const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) =>
-    underlying(model, context, {
-      ...options,
-      cacheRetention: "none",
-    });
-}
-
-export function isAnthropicBedrockModel(modelId: string): boolean {
-  const normalized = modelId.toLowerCase();
-  return normalized.includes("anthropic.claude") || normalized.includes("anthropic/claude");
 }

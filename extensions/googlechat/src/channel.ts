@@ -5,9 +5,9 @@ import {
   createScopedChannelConfigAdapter,
 } from "openclaw/plugin-sdk/channel-config-helpers";
 import {
+  composeAccountWarningCollectors,
   composeWarningCollectors,
   createAllowlistProviderGroupPolicyWarningCollector,
-  createConditionalWarningCollector,
   createAllowlistProviderOpenWarningCollector,
 } from "openclaw/plugin-sdk/channel-policy";
 import { createChatChannelPlugin } from "openclaw/plugin-sdk/core";
@@ -18,14 +18,20 @@ import {
 } from "openclaw/plugin-sdk/directory-runtime";
 import { buildPassiveProbedChannelStatusSummary } from "openclaw/plugin-sdk/extension-shared";
 import { createLazyRuntimeNamedExport } from "openclaw/plugin-sdk/lazy-runtime";
-import { createComputedAccountStatusAdapter } from "openclaw/plugin-sdk/status-helpers";
+import {
+  createComputedAccountStatusAdapter,
+  createDefaultChannelRuntimeState,
+} from "openclaw/plugin-sdk/status-helpers";
 import {
   buildChannelConfigSchema,
+  chunkTextForOutbound,
   DEFAULT_ACCOUNT_ID,
   createAccountStatusSink,
   getChatChannelMeta,
   missingTargetError,
   PAIRING_APPROVED_MESSAGE,
+  fetchRemoteMedia,
+  loadWebMedia,
   resolveChannelMediaMaxBytes,
   runPassiveAccountLifecycle,
   type ChannelMessageActionAdapter,
@@ -113,16 +119,17 @@ const collectGoogleChatGroupPolicyWarnings =
     },
   });
 
-const collectGoogleChatSecurityWarnings = composeWarningCollectors<{
-  cfg: OpenClawConfig;
-  account: ResolvedGoogleChatAccount;
-}>(
+const collectGoogleChatSecurityWarnings = composeAccountWarningCollectors<
+  ResolvedGoogleChatAccount,
+  {
+    cfg: OpenClawConfig;
+    account: ResolvedGoogleChatAccount;
+  }
+>(
   collectGoogleChatGroupPolicyWarnings,
-  createConditionalWarningCollector(
-    ({ account }) =>
-      account.config.dm?.policy === "open" &&
-      '- Google Chat DMs are open to anyone. Set channels.googlechat.dm.policy="pairing" or "allowlist".',
-  ),
+  (account) =>
+    account.config.dm?.policy === "open" &&
+    '- Google Chat DMs are open to anyone. Set channels.googlechat.dm.policy="pairing" or "allowlist".',
 );
 
 export const googlechatPlugin = createChatChannelPlugin({
@@ -208,13 +215,7 @@ export const googlechatPlugin = createChatChannelPlugin({
     },
     actions: googlechatActions,
     status: createComputedAccountStatusAdapter<ResolvedGoogleChatAccount>({
-      defaultRuntime: {
-        accountId: DEFAULT_ACCOUNT_ID,
-        running: false,
-        lastStartAt: null,
-        lastStopAt: null,
-        lastError: null,
-      },
+      defaultRuntime: createDefaultChannelRuntimeState(DEFAULT_ACCOUNT_ID),
       collectStatusIssues: (accounts): ChannelStatusIssue[] =>
         accounts.flatMap((entry) => {
           const accountId = String(entry.accountId ?? DEFAULT_ACCOUNT_ID);
@@ -316,8 +317,8 @@ export const googlechatPlugin = createChatChannelPlugin({
       idLabel: "googlechatUserId",
       message: PAIRING_APPROVED_MESSAGE,
       normalizeAllowEntry: (entry) => formatAllowFromEntry(entry),
-      notify: async ({ cfg, id, message }) => {
-        const account = resolveGoogleChatAccount({ cfg: cfg });
+      notify: async ({ cfg, id, message, accountId }) => {
+        const account = resolveGoogleChatAccount({ cfg: cfg, accountId });
         if (account.credentialSource === "none") {
           return;
         }
@@ -349,7 +350,7 @@ export const googlechatPlugin = createChatChannelPlugin({
   outbound: {
     base: {
       deliveryMode: "direct",
-      chunker: (text, limit) => getGoogleChatRuntime().channel.text.chunkMarkdownText(text, limit),
+      chunker: chunkTextForOutbound,
       chunkerMode: "markdown",
       textChunkLimit: 4000,
       resolveTarget: ({ to }) => {
@@ -412,7 +413,6 @@ export const googlechatPlugin = createChatChannelPlugin({
         });
         const space = await resolveGoogleChatOutboundSpace({ account, target: to });
         const thread = (threadId ?? replyToId ?? undefined) as string | undefined;
-        const runtime = getGoogleChatRuntime();
         const maxBytes = resolveChannelMediaMaxBytes({
           cfg: cfg,
           resolveChannelLimitMb: ({ cfg, accountId }) =>
@@ -426,11 +426,11 @@ export const googlechatPlugin = createChatChannelPlugin({
         });
         const effectiveMaxBytes = maxBytes ?? (account.config.mediaMaxMb ?? 20) * 1024 * 1024;
         const loaded = /^https?:\/\//i.test(mediaUrl)
-          ? await runtime.channel.media.fetchRemoteMedia({
+          ? await fetchRemoteMedia({
               url: mediaUrl,
               maxBytes: effectiveMaxBytes,
             })
-          : await runtime.media.loadWebMedia(mediaUrl, {
+          : await loadWebMedia(mediaUrl, {
               maxBytes: effectiveMaxBytes,
               localRoots: mediaLocalRoots?.length ? mediaLocalRoots : undefined,
             });
