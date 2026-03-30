@@ -29,8 +29,8 @@ const API_PROVIDER_ID = "minimax";
 const PORTAL_PROVIDER_ID = "minimax-portal";
 const PROVIDER_LABEL = "MiniMax";
 const DEFAULT_MODEL = MINIMAX_DEFAULT_MODEL_ID;
-const DEFAULT_BASE_URL_CN = "https://api.minimaxi.com/anthropic";
-const DEFAULT_BASE_URL_GLOBAL = "https://api.minimax.io/anthropic";
+const DEFAULT_BASE_URL_CN = "https://api.minimaxi.com/v1";
+const DEFAULT_BASE_URL_GLOBAL = "https://api.minimaxi.com/v1";
 
 function getDefaultBaseUrl(region: MiniMaxRegion): string {
   return region === "cn" ? DEFAULT_BASE_URL_CN : DEFAULT_BASE_URL_GLOBAL;

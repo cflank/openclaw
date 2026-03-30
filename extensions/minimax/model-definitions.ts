@@ -1,9 +1,9 @@
 import type { ModelDefinitionConfig } from "openclaw/plugin-sdk/provider-model-shared";
 import { MINIMAX_DEFAULT_MODEL_ID, MINIMAX_TEXT_MODEL_CATALOG } from "./provider-models.js";
 
-export const DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1";
-export const MINIMAX_API_BASE_URL = "https://api.minimax.io/anthropic";
-export const MINIMAX_CN_API_BASE_URL = "https://api.minimaxi.com/anthropic";
+export const DEFAULT_MINIMAX_BASE_URL = "https://api.minimaxi.com/v1";
+export const MINIMAX_API_BASE_URL = "https://api.minimaxi.com/v1";
+export const MINIMAX_CN_API_BASE_URL = "https://api.minimaxi.com/v1";
 export const MINIMAX_HOSTED_MODEL_ID = MINIMAX_DEFAULT_MODEL_ID;
 export const MINIMAX_HOSTED_MODEL_REF = `minimax/${MINIMAX_HOSTED_MODEL_ID}`;
 export const DEFAULT_MINIMAX_CONTEXT_WINDOW = 204800;
