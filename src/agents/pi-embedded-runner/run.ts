@@ -137,7 +137,11 @@ import {
   resolveRunLivenessState,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./run/incomplete-turn.js";
-import type { RunEmbeddedPiAgentParams } from "./run/params.js";
+import {
+  createRuntimeContext,
+  ensureEvidenceDir,
+  type RunEmbeddedPiAgentParams,
+} from "./run/params.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 import { handleRetryLimitExhaustion } from "./run/retry-limit.js";
 import {
@@ -303,6 +307,33 @@ function buildHandledReplyPayloads(reply?: ReplyPayload) {
 export async function runEmbeddedPiAgent(
   params: RunEmbeddedPiAgentParams,
 ): Promise<EmbeddedPiRunResult> {
+  const singleWorkerCommand = params.singleWorkerCommand;
+  if (singleWorkerCommand) {
+    if (singleWorkerCommand.agent !== singleWorkerCommand.worker_id) {
+      throw new Error("singleWorkerCommand.agent must equal worker_id");
+    }
+    if (singleWorkerCommand.allowed_tools.length === 0) {
+      throw new Error("singleWorkerCommand.allowed_tools must not be empty");
+    }
+    await ensureEvidenceDir(singleWorkerCommand);
+    createRuntimeContext({
+      command: singleWorkerCommand,
+      openclawRunId: params.runId,
+    });
+    if (
+      (!params.agentId || params.agentId.trim().length === 0) &&
+      singleWorkerCommand.worker_id.trim().length > 0
+    ) {
+      params = {
+        ...params,
+        agentId: singleWorkerCommand.worker_id,
+      };
+    }
+    params = {
+      ...params,
+      toolsAllow: [...singleWorkerCommand.allowed_tools],
+    };
+  }
   // Resolve sessionKey early so all downstream consumers (hooks, LCM, compaction)
   // receive a non-null key even when callers omit it. See #60552.
   const effectiveSessionKey = backfillSessionKey({
@@ -1111,6 +1142,7 @@ export async function runEmbeddedPiAgent(
             silentExpected: params.silentExpected,
             bootstrapContextMode: params.bootstrapContextMode,
             bootstrapContextRunKind: params.bootstrapContextRunKind,
+            singleWorkerCommand: params.singleWorkerCommand,
             jobId: params.jobId,
             toolsAllow: params.toolsAllow,
             ownerOnlyToolAllowlist: params.ownerOnlyToolAllowlist,
@@ -2040,6 +2072,29 @@ export async function runEmbeddedPiAgent(
             promptTokens: usageMeta.promptTokens,
             compactionCount: autoCompactionCount > 0 ? autoCompactionCount : undefined,
             compactionTokensAfter: lastCompactionTokensAfter,
+            singleWorkerEvidence:
+              attempt.workspaceEvidencePath ||
+              attempt.providerRequestPath ||
+              attempt.visibleToolsPath ||
+              attempt.firstResponsePath ||
+              attempt.toolCallsPath ||
+              attempt.rawOutputPath ||
+              attempt.openvikingReceiptPath ||
+              attempt.failureReason
+                ? {
+                    workspaceEvidencePath: attempt.workspaceEvidencePath,
+                    providerRequestPath: attempt.providerRequestPath,
+                    providerRequestsJsonlPath: attempt.providerRequestsJsonlPath,
+                    visibleToolsPath: attempt.visibleToolsPath,
+                    firstResponsePath: attempt.firstResponsePath,
+                    toolCallsPath: attempt.toolCallsPath,
+                    toolCallsStatus: attempt.toolCallsStatus,
+                    rawOutputPath: attempt.rawOutputPath,
+                    openvikingReceiptPath: attempt.openvikingReceiptPath,
+                    firstResponseStopRequested: attempt.firstResponseStopRequested,
+                    failureReason: attempt.failureReason,
+                  }
+                : undefined,
           };
           const finalAssistantVisibleText = resolveFinalAssistantVisibleText(sessionLastAssistant);
           const finalAssistantRawText = resolveFinalAssistantRawText(sessionLastAssistant);

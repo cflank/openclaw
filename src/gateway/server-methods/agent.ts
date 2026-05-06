@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   listAgentIds,
   resolveDefaultAgentId,
@@ -102,8 +104,10 @@ import {
   ErrorCodes,
   errorShape,
   formatValidationErrors,
+  type AgentRunSingleWorkerParams,
   validateAgentIdentityParams,
   validateAgentParams,
+  validateAgentRunSingleWorkerParams,
   validateAgentWaitParams,
 } from "../protocol/index.js";
 import { performGatewaySessionReset } from "../session-reset-service.js";
@@ -486,6 +490,360 @@ function yieldAfterAgentAcceptedAck(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 10);
   });
+}
+
+type SingleWorkerEvidenceMeta = {
+  workspaceEvidencePath?: string;
+  providerRequestPath?: string;
+  providerRequestId?: string;
+  visibleToolsPath?: string;
+  firstResponsePath?: string;
+  toolCallsPath?: string;
+  toolCallsStatus?: string;
+  rawOutputPath?: string;
+  openvikingReceiptPath?: string;
+  failureReason?: string;
+};
+
+type AgentRunSingleWorkerPayload = {
+  status: "succeeded" | "failed";
+  openclaw_run_id: string;
+  provider_request_id?: string;
+  provider_request_id_status: "captured" | "not_available" | "unavailable";
+  workspace_evidence_path?: string;
+  provider_request_path?: string;
+  visible_tools_path?: string;
+  first_response_path?: string;
+  tool_calls_status?: string;
+  tool_calls_path?: string;
+  raw_output_path?: string;
+  openviking_receipt_path?: string;
+  failure_reason?: string;
+};
+
+const PROVIDER_REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/u;
+const PROVIDER_REQUEST_ID_KEYS = [
+  "upstreamRequestId",
+  "providerRequestId",
+  "provider_request_id",
+  "requestId",
+  "request_id",
+  "x-request-id",
+  "request-id",
+  "trace-id",
+  "trace_id",
+] as const;
+
+function normalizeProviderRequestId(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return PROVIDER_REQUEST_ID_RE.test(trimmed) ? trimmed : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = String(value);
+    return PROVIDER_REQUEST_ID_RE.test(normalized) ? normalized : undefined;
+  }
+  if (typeof value === "bigint") {
+    const normalized = String(value);
+    return PROVIDER_REQUEST_ID_RE.test(normalized) ? normalized : undefined;
+  }
+  return undefined;
+}
+
+function extractProviderRequestIdFromCapturePayload(
+  value: unknown,
+  visited: Set<object> = new Set(),
+): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  if (visited.has(value)) {
+    return undefined;
+  }
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = extractProviderRequestIdFromCapturePayload(item, visited);
+      if (nested) {
+        return nested;
+      }
+    }
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of PROVIDER_REQUEST_ID_KEYS) {
+    const requestId = normalizeProviderRequestId(record[key]);
+    if (requestId) {
+      return requestId;
+    }
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    if (!nestedValue || typeof nestedValue !== "object") {
+      continue;
+    }
+    const nested = extractProviderRequestIdFromCapturePayload(nestedValue, visited);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return undefined;
+}
+
+async function resolveProviderRequestIdFromEvidence(evidence?: SingleWorkerEvidenceMeta): Promise<{
+  providerRequestId?: string;
+  providerRequestIdStatus: "captured" | "not_available" | "unavailable";
+}> {
+  const direct = normalizeProviderRequestId(evidence?.providerRequestId);
+  if (direct) {
+    return {
+      providerRequestId: direct,
+      providerRequestIdStatus: "captured",
+    };
+  }
+
+  const providerRequestPath = normalizeOptionalString(evidence?.providerRequestPath);
+  if (!providerRequestPath) {
+    return {
+      providerRequestIdStatus: "unavailable",
+    };
+  }
+
+  try {
+    const providerRequestRaw = await fs.readFile(providerRequestPath, "utf8");
+    const providerRequestPayload = JSON.parse(providerRequestRaw) as unknown;
+    const captured = extractProviderRequestIdFromCapturePayload(providerRequestPayload);
+    if (captured) {
+      return {
+        providerRequestId: captured,
+        providerRequestIdStatus: "captured",
+      };
+    }
+    return {
+      providerRequestIdStatus: "not_available",
+    };
+  } catch {
+    return {
+      providerRequestIdStatus: "unavailable",
+    };
+  }
+}
+
+function normalizeSingleWorkerEvidenceMeta(result: unknown): SingleWorkerEvidenceMeta | undefined {
+  const top =
+    result && typeof result === "object" ? (result as Record<string, unknown>) : undefined;
+  const meta =
+    top?.meta && typeof top.meta === "object" ? (top.meta as Record<string, unknown>) : undefined;
+  const agentMeta =
+    meta?.agentMeta && typeof meta.agentMeta === "object"
+      ? (meta.agentMeta as Record<string, unknown>)
+      : undefined;
+  const evidenceRaw =
+    agentMeta?.singleWorkerEvidence && typeof agentMeta.singleWorkerEvidence === "object"
+      ? (agentMeta.singleWorkerEvidence as Record<string, unknown>)
+      : meta?.singleWorkerEvidence && typeof meta.singleWorkerEvidence === "object"
+        ? (meta.singleWorkerEvidence as Record<string, unknown>)
+        : undefined;
+  if (!evidenceRaw) {
+    return undefined;
+  }
+  return {
+    workspaceEvidencePath: normalizeOptionalString(evidenceRaw.workspaceEvidencePath),
+    providerRequestPath: normalizeOptionalString(evidenceRaw.providerRequestPath),
+    providerRequestId:
+      normalizeOptionalString(evidenceRaw.providerRequestId) ??
+      normalizeOptionalString(evidenceRaw.provider_request_id),
+    visibleToolsPath: normalizeOptionalString(evidenceRaw.visibleToolsPath),
+    firstResponsePath: normalizeOptionalString(evidenceRaw.firstResponsePath),
+    toolCallsPath: normalizeOptionalString(evidenceRaw.toolCallsPath),
+    toolCallsStatus: normalizeOptionalString(evidenceRaw.toolCallsStatus),
+    rawOutputPath: normalizeOptionalString(evidenceRaw.rawOutputPath),
+    openvikingReceiptPath: normalizeOptionalString(evidenceRaw.openvikingReceiptPath),
+    failureReason: normalizeOptionalString(evidenceRaw.failureReason),
+  };
+}
+
+type SingleWorkerEvidencePathKey =
+  | "workspaceEvidencePath"
+  | "providerRequestPath"
+  | "visibleToolsPath"
+  | "firstResponsePath"
+  | "toolCallsPath"
+  | "rawOutputPath"
+  | "openvikingReceiptPath";
+
+const SINGLE_WORKER_EVIDENCE_PATH_FIELDS: SingleWorkerEvidencePathKey[] = [
+  "workspaceEvidencePath",
+  "providerRequestPath",
+  "visibleToolsPath",
+  "firstResponsePath",
+  "toolCallsPath",
+  "rawOutputPath",
+  "openvikingReceiptPath",
+];
+
+function isPathWithinDir(targetPath: string, baseDir: string): boolean {
+  const relative = path.relative(baseDir, targetPath);
+  return relative.length === 0 || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function resolveVerifiedEvidencePath(params: {
+  evidenceDir: string;
+  candidatePath?: string;
+}): Promise<string | undefined> {
+  const candidate = normalizeOptionalString(params.candidatePath);
+  if (!candidate) {
+    return undefined;
+  }
+  const resolvedEvidenceDir = path.resolve(params.evidenceDir);
+  const resolvedPath = path.isAbsolute(candidate)
+    ? path.resolve(candidate)
+    : path.resolve(resolvedEvidenceDir, candidate);
+  let realEvidenceDir: string;
+  try {
+    realEvidenceDir = await fs.realpath(resolvedEvidenceDir);
+  } catch {
+    return undefined;
+  }
+  try {
+    // 这里必须用 realpath 做真实路径校验，防止 evidence_dir 内部的 symlink/伪路径
+    // 指到目录外部文件或日志，再冒充 provider request / visible tools / first response 证据。
+    const realResolvedPath = await fs.realpath(resolvedPath);
+    if (!isPathWithinDir(realResolvedPath, realEvidenceDir)) {
+      return undefined;
+    }
+    const stat = await fs.stat(realResolvedPath);
+    if (!stat.isFile()) {
+      return undefined;
+    }
+    return realResolvedPath;
+  } catch {
+    return undefined;
+  }
+}
+
+async function normalizeSingleWorkerEvidencePaths(params: {
+  command: AgentRunSingleWorkerParams["command"];
+  evidence: SingleWorkerEvidenceMeta;
+}): Promise<SingleWorkerEvidenceMeta> {
+  const normalized: SingleWorkerEvidenceMeta = {
+    ...params.evidence,
+  };
+  for (const fieldName of SINGLE_WORKER_EVIDENCE_PATH_FIELDS) {
+    normalized[fieldName] = await resolveVerifiedEvidencePath({
+      evidenceDir: params.command.evidence_dir,
+      candidatePath: params.evidence[fieldName],
+    });
+  }
+  return normalized;
+}
+
+function validateSingleWorkerEvidenceMeta(params: {
+  command: AgentRunSingleWorkerParams["command"];
+  evidence: SingleWorkerEvidenceMeta;
+}): string | undefined {
+  const required: Array<[string, string | undefined]> = [
+    ["workspaceEvidencePath", params.evidence.workspaceEvidencePath],
+    ["providerRequestPath", params.evidence.providerRequestPath],
+    ["visibleToolsPath", params.evidence.visibleToolsPath],
+    ["firstResponsePath", params.evidence.firstResponsePath],
+    ["toolCallsPath", params.evidence.toolCallsPath],
+    ["toolCallsStatus", params.evidence.toolCallsStatus],
+  ];
+  for (const [fieldName, value] of required) {
+    if (!value || value.trim().length === 0) {
+      return `single worker evidence missing ${fieldName}`;
+    }
+  }
+  if (!params.command.stop_after_first_response) {
+    if (!params.evidence.rawOutputPath || params.evidence.rawOutputPath.trim().length === 0) {
+      return "single worker evidence missing rawOutputPath for full run";
+    }
+    if (
+      !params.evidence.openvikingReceiptPath ||
+      params.evidence.openvikingReceiptPath.trim().length === 0
+    ) {
+      return "single worker evidence missing openvikingReceiptPath for full run";
+    }
+  }
+  return undefined;
+}
+
+async function buildSingleWorkerFailedPayload(params: {
+  openclawRunId: string;
+  reason: string;
+  evidence?: SingleWorkerEvidenceMeta;
+}): Promise<AgentRunSingleWorkerPayload> {
+  const providerRequestIdInfo = await resolveProviderRequestIdFromEvidence(params.evidence);
+  return {
+    status: "failed",
+    openclaw_run_id: params.openclawRunId,
+    provider_request_id: providerRequestIdInfo.providerRequestId,
+    provider_request_id_status: providerRequestIdInfo.providerRequestIdStatus,
+    workspace_evidence_path: params.evidence?.workspaceEvidencePath,
+    provider_request_path: params.evidence?.providerRequestPath,
+    visible_tools_path: params.evidence?.visibleToolsPath,
+    first_response_path: params.evidence?.firstResponsePath,
+    tool_calls_status: params.evidence?.toolCallsStatus,
+    tool_calls_path: params.evidence?.toolCallsPath,
+    raw_output_path: params.evidence?.rawOutputPath,
+    openviking_receipt_path: params.evidence?.openvikingReceiptPath,
+    failure_reason: params.reason,
+  };
+}
+
+async function buildSingleWorkerGatewayPayload(params: {
+  command: AgentRunSingleWorkerParams["command"];
+  openclawRunId: string;
+  result: unknown;
+}): Promise<AgentRunSingleWorkerPayload> {
+  const evidenceRaw = normalizeSingleWorkerEvidenceMeta(params.result);
+  if (!evidenceRaw) {
+    return await buildSingleWorkerFailedPayload({
+      openclawRunId: params.openclawRunId,
+      reason: "single worker runtime returned no singleWorkerEvidence",
+    });
+  }
+  const evidence = await normalizeSingleWorkerEvidencePaths({
+    command: params.command,
+    evidence: evidenceRaw,
+  });
+  if (evidence.failureReason && evidence.failureReason.trim().length > 0) {
+    return await buildSingleWorkerFailedPayload({
+      openclawRunId: params.openclawRunId,
+      reason: evidence.failureReason,
+      evidence,
+    });
+  }
+  const validationError = validateSingleWorkerEvidenceMeta({
+    command: params.command,
+    evidence,
+  });
+  if (validationError) {
+    return await buildSingleWorkerFailedPayload({
+      openclawRunId: params.openclawRunId,
+      reason: validationError,
+      evidence,
+    });
+  }
+  const providerRequestIdInfo = await resolveProviderRequestIdFromEvidence(evidence);
+  return {
+    status: "succeeded",
+    openclaw_run_id: params.openclawRunId,
+    provider_request_id: providerRequestIdInfo.providerRequestId,
+    provider_request_id_status: providerRequestIdInfo.providerRequestIdStatus,
+    workspace_evidence_path: evidence.workspaceEvidencePath,
+    provider_request_path: evidence.providerRequestPath,
+    visible_tools_path: evidence.visibleToolsPath,
+    first_response_path: evidence.firstResponsePath,
+    tool_calls_status: evidence.toolCallsStatus,
+    tool_calls_path: evidence.toolCallsPath,
+    raw_output_path: evidence.rawOutputPath,
+    openviking_receipt_path: evidence.openvikingReceiptPath,
+  };
 }
 
 export const agentHandlers: GatewayRequestHandlers = {
@@ -1417,6 +1775,64 @@ export const agentHandlers: GatewayRequestHandlers = {
         }
       }
     })();
+  },
+  "agent.runSingleWorker": async ({ params, respond, context }) => {
+    if (!validateAgentRunSingleWorkerParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid agent.runSingleWorker params: ${formatValidationErrors(
+            validateAgentRunSingleWorkerParams.errors,
+          )}`,
+        ),
+      );
+      return;
+    }
+    const request = params as AgentRunSingleWorkerParams;
+    const openclawRunId = randomUUID();
+    const sessionAgentId = normalizeAgentId(request.command.worker_id);
+    try {
+      const runResult = await agentCommandFromIngress(
+        {
+          message: "Complete this worker turn using configured workspace instructions.",
+          agentId: request.command.worker_id,
+          sessionId: `single-worker-${openclawRunId}`,
+          sessionKey: `agent:${sessionAgentId}:single-worker:${openclawRunId}`,
+          runId: openclawRunId,
+          deliver: false,
+          senderIsOwner: false,
+          allowModelOverride: false,
+          singleWorkerCommand: request.command,
+        },
+        defaultRuntime,
+        context.deps,
+      );
+      const payload = await buildSingleWorkerGatewayPayload({
+        command: request.command,
+        openclawRunId,
+        result: runResult,
+      });
+      if (payload.status === "succeeded") {
+        respond(true, payload, undefined, { runId: openclawRunId });
+        return;
+      }
+      respond(
+        false,
+        payload,
+        errorShape(ErrorCodes.UNAVAILABLE, payload.failure_reason ?? "single worker run failed"),
+        { runId: openclawRunId },
+      );
+    } catch (err) {
+      const payload = await buildSingleWorkerFailedPayload({
+        openclawRunId,
+        reason: String(err),
+      });
+      respond(false, payload, errorShape(ErrorCodes.UNAVAILABLE, String(err)), {
+        runId: openclawRunId,
+      });
+    }
   },
   "agent.identity.get": ({ params, respond, context }) => {
     if (!validateAgentIdentityParams(params)) {

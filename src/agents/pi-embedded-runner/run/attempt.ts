@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ import {
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { filterHeartbeatPairs } from "../../../auto-reply/heartbeat-filter.js";
 import { getRuntimeConfig } from "../../../config/config.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { AssembleResult } from "../../../context-engine/types.js";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import {
@@ -51,7 +53,7 @@ import { resolveUserPath } from "../../../utils.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
 import { isReasoningTagProvider } from "../../../utils/provider-utils.js";
 import { resolveOpenClawAgentDir } from "../../agent-paths.js";
-import { resolveSessionAgentIds } from "../../agent-scope.js";
+import { resolveAgentWorkspaceDir, resolveSessionAgentIds } from "../../agent-scope.js";
 import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
 import {
   analyzeBootstrapBudget,
@@ -120,6 +122,7 @@ import {
   resolveGroupToolPolicy,
   resolveSubagentToolPolicyForSession,
 } from "../../pi-tools.policy.js";
+import type { AnyAgentTool } from "../../pi-tools.types.js";
 import { wrapStreamFnTextTransforms } from "../../plugin-text-transforms.js";
 import { describeProviderRequestRoutingSummary } from "../../provider-attribution.js";
 import { registerProviderStreamForModel } from "../../provider-stream.js";
@@ -318,6 +321,7 @@ import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
+import { registerSingleWorkerFrontlineTools } from "./frontline-tools.js";
 import {
   installHistoryImagePruneContextTransform,
   pruneProcessedHistoryImages,
@@ -325,12 +329,22 @@ import {
 import { detectAndLoadPromptImages } from "./images.js";
 import { buildAttemptReplayMetadata } from "./incomplete-turn.js";
 import { resolveLlmIdleTimeoutMs, streamWithIdleTimeout } from "./llm-idle-timeout.js";
+import { registerSingleWorkerMarketTools } from "./market-tools.js";
 import { resolveMessageMergeStrategy } from "./message-merge-strategy.js";
 import {
   MID_TURN_PRECHECK_ERROR_MESSAGE,
   isMidTurnPrecheckSignal,
   type MidTurnPrecheckRequest,
 } from "./midturn-precheck.js";
+import { registerOpenVikingTools } from "./openviking-tools.js";
+import {
+  appendOpenVikingMaterialBrief,
+  createRuntimeContext,
+  resolveSingleWorkerProfilePrompt,
+  withRuntimeMarkers,
+  writeWorkspaceEvidence,
+  type RuntimeContext,
+} from "./params.js";
 import {
   PREEMPTIVE_OVERFLOW_ERROR_TEXT,
   shouldPreemptivelyCompactBeforePrompt,
@@ -379,6 +393,221 @@ export {
 };
 
 const MAX_BTW_SNAPSHOT_MESSAGES = 100;
+
+export type RuntimeToolCallRecord = {
+  tool_call_id: string;
+  tool_name: string;
+  action: string;
+  capability_id?: string;
+  material_id?: string;
+  uri?: string;
+  error?: string;
+  result_sha256?: string;
+  status: "success" | "error";
+  started_at: string;
+  finished_at: string;
+};
+
+type FirstResponseEvidence = {
+  source: "openclaw_first_model_event";
+  run_id: string;
+  call_id: string;
+  worker_id: string;
+  stage: string;
+  profile: string;
+  openclaw_run_id: string;
+  event_kind: "assistant_text" | "tool_call";
+  text_path?: string;
+  text?: string;
+  tool_call?: {
+    tool_call_id?: string;
+    name?: string;
+  };
+  captured_at: string;
+};
+
+type FirstResponseAgentEvent = {
+  stream: string;
+  data?: Record<string, unknown>;
+};
+
+const REDACTED_PROVIDER_CAPTURE_HEADER_VALUE = "<redacted>";
+const SENSITIVE_PROVIDER_CAPTURE_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "api-key",
+  "openai-api-key",
+]);
+
+function sha256ForUnknown(value: unknown): string {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value ?? null);
+  return crypto.createHash("sha256").update(serialized).digest("hex");
+}
+
+function isSensitiveProviderCaptureHeaderName(name: string): boolean {
+  return SENSITIVE_PROVIDER_CAPTURE_HEADER_NAMES.has(name.trim().toLowerCase());
+}
+
+function redactSensitiveHeadersInHeaderMap(
+  headers: Record<string, unknown>,
+): Record<string, unknown> {
+  const redacted: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    redacted[name] = isSensitiveProviderCaptureHeaderName(name)
+      ? REDACTED_PROVIDER_CAPTURE_HEADER_VALUE
+      : redactSensitiveHeadersForProviderCapture(value);
+  }
+  return redacted;
+}
+
+export function redactSensitiveHeadersForProviderCapture(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSensitiveHeadersForProviderCapture(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const source = value as Record<string, unknown>;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(source)) {
+    if (isSensitiveProviderCaptureHeaderName(key)) {
+      redacted[key] = REDACTED_PROVIDER_CAPTURE_HEADER_VALUE;
+      continue;
+    }
+    if (
+      key.trim().toLowerCase() === "headers" &&
+      entry &&
+      typeof entry === "object" &&
+      !Array.isArray(entry)
+    ) {
+      redacted[key] = redactSensitiveHeadersInHeaderMap(entry as Record<string, unknown>);
+      continue;
+    }
+    redacted[key] = redactSensitiveHeadersForProviderCapture(entry);
+  }
+  return redacted;
+}
+
+async function writeJsonWithRuntimeMarkers(params: {
+  filePath: string;
+  payload: object;
+  context: RuntimeContext;
+}): Promise<string> {
+  await fs.mkdir(path.dirname(params.filePath), { recursive: true });
+  const enriched = withRuntimeMarkers(params.payload, params.context);
+  await fs.writeFile(params.filePath, `${JSON.stringify(enriched, null, 2)}\n`, "utf8");
+  return params.filePath;
+}
+
+export function extractToolsFromProviderPayload(payload: unknown): unknown[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  const record = payload as Record<string, unknown>;
+  if (Array.isArray(record.tools)) {
+    return record.tools;
+  }
+  return [];
+}
+
+export function buildFirstResponseEvidenceFromEvent(params: {
+  event: FirstResponseAgentEvent;
+  markers: RuntimeContext["markers"];
+  capturedAt: string;
+}): FirstResponseEvidence | null {
+  const data = params.event.data ?? {};
+  const textValue = typeof data.text === "string" ? data.text.trim() : "";
+  const isAssistantText = params.event.stream === "assistant" && textValue.length > 0;
+  const isToolStart =
+    params.event.stream === "tool" &&
+    data.phase === "start" &&
+    (typeof data.name === "string" || typeof data.toolCallId === "string");
+  if (!isAssistantText && !isToolStart) {
+    return null;
+  }
+  return {
+    source: "openclaw_first_model_event",
+    run_id: params.markers.run_id,
+    call_id: params.markers.call_id,
+    worker_id: params.markers.worker_id,
+    stage: params.markers.stage,
+    profile: params.markers.profile,
+    openclaw_run_id: params.markers.openclaw_run_id,
+    event_kind: isAssistantText ? "assistant_text" : "tool_call",
+    ...(isAssistantText ? { text: textValue } : {}),
+    ...(isToolStart
+      ? {
+          tool_call: {
+            tool_call_id: typeof data.toolCallId === "string" ? data.toolCallId : undefined,
+            name: typeof data.name === "string" ? data.name : undefined,
+          },
+        }
+      : {}),
+    captured_at: params.capturedAt,
+  };
+}
+
+export async function writeFirstResponseEvidence(params: {
+  context: RuntimeContext;
+  evidence: FirstResponseEvidence;
+}): Promise<string> {
+  const payload: FirstResponseEvidence = { ...params.evidence };
+  await fs.mkdir(params.context.evidenceDir, { recursive: true });
+  if (payload.event_kind === "assistant_text" && typeof payload.text === "string") {
+    const textPath = path.join(params.context.evidenceDir, "first-response.txt");
+    await fs.writeFile(textPath, payload.text, "utf8");
+    payload.text_path = textPath;
+  }
+  const firstResponsePath = path.join(params.context.evidenceDir, "first-response.json");
+  await writeJsonWithRuntimeMarkers({
+    filePath: firstResponsePath,
+    payload,
+    context: params.context,
+  });
+  return firstResponsePath;
+}
+
+export async function resolveProviderPayloadForCapture(params: {
+  payload: unknown;
+  providerModel: unknown;
+  priorOnPayload?: (payload: unknown, providerModel: unknown) => unknown | Promise<unknown>;
+}): Promise<unknown> {
+  if (!params.priorOnPayload) {
+    return params.payload;
+  }
+  const nextPayload = await params.priorOnPayload(params.payload, params.providerModel);
+  return nextPayload === undefined ? params.payload : nextPayload;
+}
+
+export function buildToolCallsEvidencePayload(params: {
+  status: "none" | "recorded";
+  calls: RuntimeToolCallRecord[];
+  markers: RuntimeContext["markers"];
+}): {
+  source: "model_tool_events";
+  run_id: string;
+  call_id: string;
+  worker_id: string;
+  stage: string;
+  profile: string;
+  openclaw_run_id: string;
+  status: "none" | "recorded";
+  calls: RuntimeToolCallRecord[];
+} {
+  return {
+    source: "model_tool_events",
+    // guard 需要直接从顶层字段校验调用身份，不能只依赖 runtime_markers。
+    run_id: params.markers.run_id,
+    call_id: params.markers.call_id,
+    worker_id: params.markers.worker_id,
+    stage: params.markers.stage,
+    profile: params.markers.profile,
+    openclaw_run_id: params.markers.openclaw_run_id,
+    status: params.status,
+    calls: params.calls,
+  };
+}
 
 export function resolveUnknownToolGuardThreshold(loopDetection?: {
   enabled?: boolean;
@@ -499,6 +728,348 @@ export function applyEmbeddedAttemptToolsAllow<T extends { name: string }>(
   }
   const allowSet = new Set(toolsAllow.map((name) => normalizeToolName(name)));
   return tools.filter((tool) => allowSet.has(normalizeToolName(tool.name)));
+}
+
+function normalizeToolsAllowList(toolsAllow?: string[]): string[] {
+  return toolsAllow?.map((name) => normalizeToolName(name)).filter((name) => name.length > 0) ?? [];
+}
+
+function isBundleMcpToolName(toolName: string): boolean {
+  return normalizeToolName(toolName).includes(TOOL_NAME_SEPARATOR);
+}
+
+const OPENVIKING_MCP_SERVER_NAME = "openvikingArtifact";
+const OPENVIKING_MCP_SERVER_TOOL_PREFIX = `${OPENVIKING_MCP_SERVER_NAME}${TOOL_NAME_SEPARATOR}`;
+const OPENVIKING_MCP_ALLOWED_TOOLS_HEADER = "X-OpenViking-Allowed-Tools";
+const OPENVIKING_MCP_WORKER_HEADER = "X-OpenViking-Worker";
+const DEFAULT_OPENVIKING_MCP_URL = "http://127.0.0.1:1944/mcp";
+
+export function resolveSingleWorkerOpenVikingMcpAllowedTools(
+  commandAllowedTools: string[],
+): string[] {
+  const deduped = new Set<string>();
+  const allowed: string[] = [];
+  for (const toolName of commandAllowedTools) {
+    const trimmed = typeof toolName === "string" ? toolName.trim() : "";
+    if (!trimmed || !trimmed.startsWith(OPENVIKING_MCP_SERVER_TOOL_PREFIX)) {
+      continue;
+    }
+    if (deduped.has(trimmed)) {
+      continue;
+    }
+    deduped.add(trimmed);
+    allowed.push(trimmed);
+  }
+  return allowed;
+}
+
+function resolveOpenVikingMcpUrl(): string {
+  const candidate = process.env.OPENVIKING_MCP_URL?.trim();
+  if (candidate && candidate.length > 0) {
+    return candidate;
+  }
+  return DEFAULT_OPENVIKING_MCP_URL;
+}
+
+export function resolveSingleWorkerMcpConfigOverride(
+  runtimeContext?: RuntimeContext,
+): OpenClawConfig | undefined {
+  if (!runtimeContext) {
+    return undefined;
+  }
+  const allowedMcpTools = resolveSingleWorkerOpenVikingMcpAllowedTools(
+    runtimeContext.command.allowed_tools,
+  );
+  if (allowedMcpTools.length === 0) {
+    return undefined;
+  }
+  return {
+    mcp: {
+      servers: {
+        // 这里把单 worker 的 MCP 可见工具名单下沉到 transport header，防止 sidecar 暴露超出本轮授权的工具。
+        [OPENVIKING_MCP_SERVER_NAME]: {
+          transport: "streamable-http",
+          url: resolveOpenVikingMcpUrl(),
+          headers: {
+            [OPENVIKING_MCP_WORKER_HEADER]: runtimeContext.command.worker_id,
+            [OPENVIKING_MCP_ALLOWED_TOOLS_HEADER]: JSON.stringify(allowedMcpTools),
+          },
+        },
+      },
+    },
+  };
+}
+
+export function mergeRuntimeMcpConfig(params: {
+  cfg?: OpenClawConfig;
+  runtimeContext?: RuntimeContext;
+}): OpenClawConfig | undefined {
+  const override = resolveSingleWorkerMcpConfigOverride(params.runtimeContext);
+  if (!override) {
+    return params.cfg;
+  }
+  const currentCfg = params.cfg ?? {};
+  return {
+    ...currentCfg,
+    mcp: {
+      ...currentCfg.mcp,
+      ...override.mcp,
+      servers: {
+        ...(currentCfg.mcp?.servers ?? {}),
+        ...(override.mcp?.servers ?? {}),
+      },
+    },
+  };
+}
+
+export function resolveSingleWorkerToolsAllow(params: {
+  toolsAllow?: string[];
+  commandAllowedTools: string[];
+}): string[] {
+  const commandAllow = normalizeToolsAllowList(params.commandAllowedTools);
+  const explicitAllow = normalizeToolsAllowList(params.toolsAllow);
+  if (explicitAllow.length === 0) {
+    return commandAllow;
+  }
+  const commandAllowSet = new Set(commandAllow);
+  return explicitAllow.filter((toolName) => commandAllowSet.has(toolName));
+}
+
+export function applyEmbeddedAttemptToolsAllowExact<T extends { name: string }>(
+  tools: T[],
+  toolsAllow: string[],
+): T[] {
+  const allowSet = new Set(normalizeToolsAllowList(toolsAllow));
+  if (allowSet.size === 0) {
+    return [];
+  }
+  return tools.filter((tool) => allowSet.has(normalizeToolName(tool.name)));
+}
+
+export function resolveSingleWorkerMissingAllowedTools(params: {
+  runtimeContext?: RuntimeContext;
+  toolsAllow?: string[];
+  registeredTools: ArrayLike<{ name: string }> | Iterable<{ name: string }>;
+  allowDeferredBundleMcpTools: boolean;
+}): string[] {
+  if (!params.runtimeContext) {
+    return [];
+  }
+  const singleWorkerAllow = resolveSingleWorkerToolsAllow({
+    toolsAllow: params.toolsAllow,
+    commandAllowedTools: params.runtimeContext.command.allowed_tools,
+  });
+  const registeredNames = new Set(
+    Array.from(params.registeredTools, (tool) => normalizeToolName(tool.name)),
+  );
+  const missingAllowedTools = singleWorkerAllow.filter(
+    (toolName) => !registeredNames.has(toolName),
+  );
+  if (!params.allowDeferredBundleMcpTools) {
+    return missingAllowedTools;
+  }
+  return missingAllowedTools.filter((toolName) => !isBundleMcpToolName(toolName));
+}
+
+export function assertSingleWorkerAllowedToolsRegistered(params: {
+  runtimeContext?: RuntimeContext;
+  toolsAllow?: string[];
+  registeredTools: ArrayLike<{ name: string }> | Iterable<{ name: string }>;
+  allowDeferredBundleMcpTools: boolean;
+}): void {
+  const missingAllowedTools = resolveSingleWorkerMissingAllowedTools(params);
+  if (missingAllowedTools.length === 0) {
+    return;
+  }
+  throw new Error(
+    `single-worker allowed tools missing runtime registration: ${missingAllowedTools.join(", ")}`,
+  );
+}
+
+export function prepareSingleWorkerRuntimeTools(params: {
+  tools: AnyAgentTool[];
+  runtimeContext?: RuntimeContext;
+  toolsAllow?: string[];
+  workerWorkspaceRoot?: string;
+}): AnyAgentTool[] {
+  if (!params.runtimeContext) {
+    return applyEmbeddedAttemptToolsAllow(params.tools, params.toolsAllow);
+  }
+  const mergedTools = [
+    ...params.tools,
+    ...registerSingleWorkerMarketTools({
+      runtimeContext: params.runtimeContext,
+      workerWorkspaceRoot: params.workerWorkspaceRoot,
+    }),
+    ...registerSingleWorkerFrontlineTools(params.runtimeContext),
+    ...registerOpenVikingTools(params.runtimeContext),
+  ];
+  // single-worker 阶段允许 bundle MCP 工具延迟到 materialize 后再校验，避免把“尚未挂载”误判成“缺注册”。
+  assertSingleWorkerAllowedToolsRegistered({
+    runtimeContext: params.runtimeContext,
+    toolsAllow: params.toolsAllow,
+    registeredTools: mergedTools,
+    allowDeferredBundleMcpTools: true,
+  });
+  const singleWorkerAllow = resolveSingleWorkerToolsAllow({
+    toolsAllow: params.toolsAllow,
+    commandAllowedTools: params.runtimeContext.command.allowed_tools,
+  });
+  return applyEmbeddedAttemptToolsAllowExact(mergedTools, singleWorkerAllow);
+}
+
+export function prependSingleWorkerProfilePromptToPrompt(
+  prompt: string,
+  profilePrompt?: string,
+): string {
+  if (!profilePrompt) {
+    return prompt;
+  }
+  const renderedProfilePrompt = profilePrompt.trim();
+  if (!renderedProfilePrompt) {
+    throw new Error("single-worker profile prompt rendered empty");
+  }
+  const basePrompt = prompt.trim();
+  if (!basePrompt) {
+    return renderedProfilePrompt;
+  }
+  return `${renderedProfilePrompt}\n\n${basePrompt}`;
+}
+
+export function appendSingleWorkerMaterialBriefToPrompt(
+  prompt: string,
+  runtimeContext?: RuntimeContext,
+): string {
+  if (!runtimeContext) {
+    return prompt;
+  }
+  return appendOpenVikingMaterialBrief(prompt, runtimeContext.command);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+export function resolveToolResultDetails(result: unknown): Record<string, unknown> {
+  const resultRecord = asRecord(result);
+  const details = asRecord(resultRecord?.details);
+  if (details) {
+    return details;
+  }
+  const content = Array.isArray(resultRecord?.content) ? resultRecord.content : undefined;
+  if (content && content.length > 0) {
+    const first = asRecord(content[0]);
+    const text = typeof first?.text === "string" ? first.text.trim() : "";
+    if (text.startsWith("{") && text.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(text) as unknown;
+        const parsedRecord = asRecord(parsed);
+        if (parsedRecord) {
+          return parsedRecord;
+        }
+      } catch {
+        // ignore non-json text payloads
+      }
+    }
+  }
+  return resultRecord ?? {};
+}
+
+export function resolveRuntimeToolCallSuccessRecordFields(params: {
+  argsRecord: Record<string, unknown>;
+  resultDetails: Record<string, unknown>;
+}): Pick<RuntimeToolCallRecord, "capability_id" | "material_id" | "uri"> {
+  const { argsRecord, resultDetails } = params;
+  return {
+    capability_id:
+      typeof resultDetails.capability_id === "string"
+        ? resultDetails.capability_id
+        : typeof argsRecord.capability_id === "string"
+          ? argsRecord.capability_id
+          : undefined,
+    material_id:
+      typeof resultDetails.material_id === "string"
+        ? resultDetails.material_id
+        : typeof argsRecord.material_id === "string"
+          ? argsRecord.material_id
+          : undefined,
+    uri:
+      typeof resultDetails.uri === "string"
+        ? resultDetails.uri
+        : typeof argsRecord.uri === "string"
+          ? argsRecord.uri
+          : undefined,
+  };
+}
+
+export function resolveRuntimeWriteReceiptPathForRecord(params: {
+  toolName: string;
+  resultDetails: Record<string, unknown>;
+}): string | undefined {
+  if (params.toolName !== "openviking.write_material") {
+    return undefined;
+  }
+  const details = params.resultDetails;
+  const receiptRecord = asRecord(details.receipt);
+  const candidates = [
+    details.receipt_path,
+    details.receiptPath,
+    receiptRecord?.receipt_path,
+    receiptRecord?.receiptPath,
+    receiptRecord?.path,
+  ];
+  const receiptPath = candidates.find(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+  if (typeof receiptPath !== "string" || receiptPath.trim().length === 0) {
+    throw new Error("openviking.write_material result missing receipt_path");
+  }
+  return receiptPath.trim();
+}
+
+export function resolveRuntimeToolCallStatus(params: {
+  resultDetails: Record<string, unknown>;
+}): "success" | "error" {
+  if (params.resultDetails.ok === false || params.resultDetails.success === false) {
+    return "error";
+  }
+  const status =
+    typeof params.resultDetails.status === "string"
+      ? params.resultDetails.status.trim().toLowerCase()
+      : "";
+  if (status === "error" || status === "failed" || status === "failure") {
+    return "error";
+  }
+  return "success";
+}
+
+function normalizeToolCallErrorMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  const record = asRecord(value);
+  const message = record?.message;
+  if (typeof message === "string" && message.trim().length > 0) {
+    return message.trim();
+  }
+  return undefined;
+}
+
+export function resolveRuntimeToolCallErrorMessage(params: {
+  resultDetails: Record<string, unknown>;
+  fallback?: string;
+}): string | undefined {
+  return (
+    normalizeToolCallErrorMessage(params.resultDetails.error) ??
+    normalizeToolCallErrorMessage(params.resultDetails.message) ??
+    normalizeToolCallErrorMessage(params.resultDetails.reason) ??
+    (typeof params.fallback === "string" && params.fallback.trim().length > 0
+      ? params.fallback.trim()
+      : undefined)
+  );
 }
 
 const CORE_CODING_TOOL_ALLOWLIST_NAMES = new Set([
@@ -773,6 +1344,23 @@ export async function runEmbeddedAttempt(
     config: params.config,
     agentId: params.agentId,
   });
+  const runtimeContext = params.singleWorkerCommand
+    ? createRuntimeContext({
+        command: params.singleWorkerCommand,
+        openclawRunId: params.runId,
+      })
+    : undefined;
+  if (runtimeContext && runtimeContext.command.worker_id !== sessionAgentId) {
+    throw new Error(
+      `singleWorkerCommand.worker_id mismatch: expected=${sessionAgentId} actual=${runtimeContext.command.worker_id}`,
+    );
+  }
+  const singleWorkerProfilePrompt = runtimeContext
+    ? await resolveSingleWorkerProfilePrompt({
+        workspaceRoot: effectiveWorkspace,
+        command: runtimeContext.command,
+      })
+    : undefined;
   const effectiveFsWorkspaceOnly = resolveAttemptFsWorkspaceOnly({
     config: params.config,
     sessionAgentId,
@@ -787,6 +1375,19 @@ export async function runEmbeddedAttempt(
   let timedOutDuringCompaction = false;
   let timedOutDuringToolExecution = false;
   let promptError: unknown = null;
+  let providerRequestPath: string | undefined;
+  let visibleToolsPath: string | undefined;
+  let providerRequestsJsonlPath: string | undefined;
+  let workspaceEvidencePath: string | undefined;
+  let firstResponsePath: string | undefined;
+  let toolCallsPath: string | undefined;
+  let toolCallsStatus: "none" | "recorded" = "none";
+  let rawOutputPath: string | undefined;
+  const runtimeToolCalls: RuntimeToolCallRecord[] = [];
+  let firstResponseCaptured = false;
+  let firstResponseWritePromise: Promise<string> | undefined;
+  let firstResponseStopRequested = false;
+  let openvikingReceiptPath: string | undefined;
   let emitDiagnosticRunCompleted:
     | ((outcome: "completed" | "aborted" | "error", err?: unknown) => void)
     | undefined;
@@ -935,7 +1536,14 @@ export async function runEmbeddedAttempt(
               },
             });
             corePluginToolStages.mark("attempt:create-openclaw-coding-tools");
-            const filteredTools = applyEmbeddedAttemptToolsAllow(allTools, params.toolsAllow);
+            const filteredTools = prepareSingleWorkerRuntimeTools({
+              tools: allTools,
+              runtimeContext,
+              toolsAllow: params.toolsAllow,
+              workerWorkspaceRoot: params.config
+                ? resolveAgentWorkspaceDir(params.config, sessionAgentId)
+                : path.join(effectiveWorkspace, "agents", sessionAgentId),
+            });
             corePluginToolStages.mark("attempt:tools-allow");
             return filteredTools;
           })();
@@ -1056,6 +1664,10 @@ export async function runEmbeddedAttempt(
       model: params.model,
     });
     const clientTools = toolsEnabled && !isRawModelRun ? params.clientTools : undefined;
+    const runtimeMcpConfig = mergeRuntimeMcpConfig({
+      cfg: params.config,
+      runtimeContext,
+    });
     const bundleMcpEnabled = shouldCreateBundleMcpRuntimeForAttempt({
       toolsEnabled,
       disableTools: params.disableTools || isRawModelRun,
@@ -1066,7 +1678,7 @@ export async function runEmbeddedAttempt(
           sessionId: params.sessionId,
           sessionKey: params.sessionKey,
           workspaceDir: effectiveWorkspace,
-          cfg: params.config,
+          cfg: runtimeMcpConfig,
         })
       : undefined;
     const bundleMcpRuntime = bundleMcpSessionRuntime
@@ -1113,6 +1725,13 @@ export async function runEmbeddedAttempt(
       warn: (message) => log.warn(message),
     });
     const effectiveTools = [...tools, ...filteredBundledTools];
+    // 到这个阶段 bundle MCP 工具已经 materialize，必须对 command.allowed_tools 做最终 fail-closed 校验。
+    assertSingleWorkerAllowedToolsRegistered({
+      runtimeContext,
+      toolsAllow: params.toolsAllow,
+      registeredTools: effectiveTools,
+      allowDeferredBundleMcpTools: false,
+    });
     prepStages.mark("bundle-tools");
     const allowedToolNames = collectAllowedToolNames({
       tools: effectiveTools,
@@ -1577,11 +2196,128 @@ export async function runEmbeddedAttempt(
         : [];
 
       const allCustomTools = [...customTools, ...clientToolDefs];
+      // 所有 runtime 工具都在这里包一层审计：成功、失败、参数来源都会落到 tool-calls.json。
+      const auditedCustomTools = allCustomTools.map((tool) => {
+        const toolName = (tool.name ?? "").trim();
+        return {
+          ...tool,
+          execute: async (...args: Parameters<typeof tool.execute>) => {
+            const startedAt = Date.now();
+            const toolCallId = typeof args[0] === "string" ? args[0] : "";
+            const toolArgs = args.length > 1 ? args[1] : undefined;
+            if (runtimeContext?.command.stop_after_first_response) {
+              firstResponseStopRequested = true;
+              yieldDetected = true;
+              if (!runAbortController.signal.aborted) {
+                runAbortController.abort("sessions_yield");
+              }
+              abortSessionForYield?.();
+              const blocked = new Error("tool execution blocked: stop_after_first_response=true", {
+                cause: "sessions_yield",
+              });
+              blocked.name = "AbortError";
+              throw blocked;
+            }
+            try {
+              const result = await tool.execute(...args);
+              const argsRecord =
+                toolArgs && typeof toolArgs === "object"
+                  ? (toolArgs as Record<string, unknown>)
+                  : {};
+              const resultDetails = resolveToolResultDetails(result);
+              const resolvedWriteReceiptPath = resolveRuntimeWriteReceiptPathForRecord({
+                toolName,
+                resultDetails,
+              });
+              const resolvedRecordFields = resolveRuntimeToolCallSuccessRecordFields({
+                argsRecord,
+                resultDetails,
+              });
+              const recordStatus = resolveRuntimeToolCallStatus({ resultDetails });
+              const recordError =
+                recordStatus === "error"
+                  ? resolveRuntimeToolCallErrorMessage({ resultDetails })
+                  : undefined;
+              const action =
+                toolName === "openviking.write_material"
+                  ? "write"
+                  : toolName === "openviking.read_with_capability"
+                    ? "read"
+                    : "invoke";
+              const record: RuntimeToolCallRecord = {
+                tool_call_id: toolCallId,
+                tool_name: toolName,
+                action,
+                capability_id: resolvedRecordFields.capability_id,
+                material_id: resolvedRecordFields.material_id,
+                uri: resolvedRecordFields.uri,
+                result_sha256:
+                  typeof resultDetails.sha256 === "string"
+                    ? resultDetails.sha256
+                    : sha256ForUnknown(result),
+                status: recordStatus,
+                error: recordError,
+                started_at: new Date(startedAt).toISOString(),
+                finished_at: new Date().toISOString(),
+              };
+              if (
+                toolName === "openviking.write_material" &&
+                recordStatus === "success" &&
+                typeof resolvedWriteReceiptPath === "string" &&
+                resolvedWriteReceiptPath.length > 0
+              ) {
+                openvikingReceiptPath = resolvedWriteReceiptPath;
+              }
+              runtimeToolCalls.push(record);
+              toolCallsStatus = "recorded";
+              return result;
+            } catch (error) {
+              // 工具失败也必须记录为 error；不能因为没有 uri/capability 就伪造成成功调用。
+              const errorMessage =
+                error instanceof Error
+                  ? error.message
+                  : typeof error === "string"
+                    ? error
+                    : String(error);
+              const argsRecord =
+                toolArgs && typeof toolArgs === "object"
+                  ? (toolArgs as Record<string, unknown>)
+                  : {};
+              const action =
+                toolName === "openviking.write_material"
+                  ? "write"
+                  : toolName === "openviking.read_with_capability"
+                    ? "read"
+                    : "invoke";
+              const record: RuntimeToolCallRecord = {
+                tool_call_id: toolCallId,
+                tool_name: toolName,
+                action,
+                capability_id:
+                  typeof argsRecord.capability_id === "string"
+                    ? argsRecord.capability_id
+                    : undefined,
+                material_id:
+                  typeof argsRecord.material_id === "string" ? argsRecord.material_id : undefined,
+                uri: typeof argsRecord.uri === "string" ? argsRecord.uri : undefined,
+                status: "error",
+                error: errorMessage,
+                started_at: new Date(startedAt).toISOString(),
+                finished_at: new Date().toISOString(),
+                result_sha256: sha256ForUnknown(errorMessage),
+              };
+              runtimeToolCalls.push(record);
+              toolCallsStatus = "recorded";
+              throw error;
+            }
+          },
+        };
+      });
       // Pi treats `tools` as a name allowlist during session creation. Pass the
       // exact OpenClaw-managed registrations so custom tools survive startup and
       // client-provided names do not broaden the prompt/runtime boundary.
       const sessionToolAllowlist = toSessionToolAllowlist(
-        collectRegisteredToolNames(allCustomTools),
+        collectRegisteredToolNames(auditedCustomTools),
       );
 
       const createdSession = await createEmbeddedAgentSessionWithResourceLoader<
@@ -1597,7 +2333,7 @@ export async function runEmbeddedAttempt(
           model: params.model,
           thinkingLevel: mapThinkingLevel(params.thinkLevel),
           tools: sessionToolAllowlist,
-          customTools: allCustomTools,
+          customTools: auditedCustomTools,
           sessionManager,
           settingsManager,
           resourceLoader,
@@ -1609,6 +2345,17 @@ export async function runEmbeddedAttempt(
         throw new Error("Embedded agent session missing");
       }
       session.setActiveToolsByName(sessionToolAllowlist);
+      if (runtimeContext) {
+        const workspaceRoot = params.config
+          ? resolveAgentWorkspaceDir(params.config, sessionAgentId)
+          : path.join(effectiveWorkspace, "agents", sessionAgentId);
+        // workspace evidence 必须在 OpenClaw 完成真实 workspace 加载后写出，避免上层用静态扫描冒充加载事实。
+        workspaceEvidencePath = await writeWorkspaceEvidence({
+          context: runtimeContext,
+          workspaceRoot,
+          selectedStage: runtimeContext.command.stage,
+        });
+      }
       const activeSession = session;
       prepStages.mark("agent-session");
       if (isRawModelRun) {
@@ -2084,6 +2831,81 @@ export async function runEmbeddedAttempt(
       activeSession.agent.streamFn = wrapStreamFnHandleSensitiveStopReason(
         activeSession.agent.streamFn,
       );
+      let providerPayloadCaptureCount = 0;
+      if (runtimeContext) {
+        const inner = activeSession.agent.streamFn;
+        activeSession.agent.streamFn = (model, context, options) => {
+          const optionRecord =
+            options && typeof options === "object" ? (options as Record<string, unknown>) : {};
+          const onPayloadRaw = optionRecord.onPayload;
+          const priorOnPayload =
+            typeof onPayloadRaw === "function"
+              ? (onPayloadRaw as (
+                  payload: unknown,
+                  providerModel: unknown,
+                ) => unknown | Promise<unknown>)
+              : undefined;
+          const nextOptions = {
+            ...optionRecord,
+            onPayload: async (payload: unknown, providerModel: unknown) => {
+              const payloadForProvider = await resolveProviderPayloadForCapture({
+                payload,
+                providerModel,
+                priorOnPayload,
+              });
+              providerPayloadCaptureCount += 1;
+              const capturedAt = new Date().toISOString();
+              const payloadSnapshot = JSON.parse(JSON.stringify(payloadForProvider ?? null));
+              const basePayload = redactSensitiveHeadersForProviderCapture({
+                source: "provider_request_capture" as const,
+                captured_at: capturedAt,
+                sequence: providerPayloadCaptureCount,
+                provider_model:
+                  providerModel && typeof providerModel === "object"
+                    ? providerModel
+                    : { id: model.id, provider: model.provider, api: model.api },
+                payload: payloadSnapshot,
+              }) as {
+                source: "provider_request_capture";
+                captured_at: string;
+                sequence: number;
+                provider_model: unknown;
+                payload: unknown;
+              };
+              const providerRequestsLine = JSON.stringify(
+                withRuntimeMarkers(basePayload, runtimeContext),
+              );
+              providerRequestsJsonlPath =
+                providerRequestsJsonlPath ??
+                path.join(runtimeContext.evidenceDir, "provider-requests.jsonl");
+              await fs.appendFile(providerRequestsJsonlPath, `${providerRequestsLine}\n`, "utf8");
+              if (!providerRequestPath) {
+                providerRequestPath = path.join(
+                  runtimeContext.evidenceDir,
+                  "provider-request.json",
+                );
+                await writeJsonWithRuntimeMarkers({
+                  filePath: providerRequestPath,
+                  payload: basePayload,
+                  context: runtimeContext,
+                });
+                visibleToolsPath = path.join(runtimeContext.evidenceDir, "visible-tools.json");
+                await writeJsonWithRuntimeMarkers({
+                  filePath: visibleToolsPath,
+                  payload: {
+                    source: "provider_request",
+                    provider_request_path: providerRequestPath,
+                    tools: extractToolsFromProviderPayload(payloadSnapshot),
+                  },
+                  context: runtimeContext,
+                });
+              }
+              return payloadForProvider;
+            },
+          } as typeof options;
+          return inner(model, context, nextOptions);
+        };
+      }
 
       let idleTimeoutTrigger: ((error: Error) => void) | undefined;
 
@@ -2284,6 +3106,40 @@ export async function runEmbeddedAttempt(
       };
       const abortable = <T>(promise: Promise<T>): Promise<T> =>
         abortableWithSignal(runAbortController.signal, promise);
+      const onAgentEventForEvidence = (evt: {
+        stream: string;
+        data?: Record<string, unknown>;
+        sessionKey?: string;
+      }) => {
+        if (runtimeContext && !firstResponseCaptured) {
+          const firstResponsePayload = buildFirstResponseEvidenceFromEvent({
+            event: evt,
+            markers: runtimeContext.markers,
+            capturedAt: new Date().toISOString(),
+          });
+          if (firstResponsePayload) {
+            firstResponseCaptured = true;
+            firstResponseWritePromise = writeFirstResponseEvidence({
+              context: runtimeContext,
+              evidence: firstResponsePayload,
+            });
+            if (
+              runtimeContext.command.stop_after_first_response &&
+              !runAbortController.signal.aborted
+            ) {
+              firstResponseStopRequested = true;
+              yieldDetected = true;
+              runAbortController.abort("sessions_yield");
+              void activeSession.abort();
+            }
+          }
+        }
+        void params.onAgentEvent?.({
+          stream: evt.stream,
+          data: evt.data ?? {},
+          sessionKey: evt.sessionKey,
+        });
+      };
 
       const subscription = subscribeEmbeddedPiSession(
         buildEmbeddedSubscriptionParams({
@@ -2306,7 +3162,7 @@ export async function runEmbeddedAttempt(
           blockReplyChunking: params.blockReplyChunking,
           onPartialReply: params.onPartialReply,
           onAssistantMessageStart: params.onAssistantMessageStart,
-          onAgentEvent: params.onAgentEvent,
+          onAgentEvent: onAgentEventForEvidence,
           onBeforeLifecycleTerminal: () => {
             // Clear embedded-run activity before emitting terminal lifecycle events so
             // post-completion cleanup does not observe a logically finished run as active.
@@ -2546,6 +3402,10 @@ export async function runEmbeddedAttempt(
             preserveExactPrompt: heartbeatPrompt,
           },
         );
+        effectivePrompt = prependSingleWorkerProfilePromptToPrompt(
+          effectivePrompt,
+          singleWorkerProfilePrompt?.prompt,
+        );
         if (userPromptPrefixText) {
           effectivePrompt = `${userPromptPrefixText}\n\n${effectivePrompt}`;
         }
@@ -2586,6 +3446,11 @@ export async function runEmbeddedAttempt(
               `hooks: appended context to prompt (${hookResult.appendContext.length} chars)`,
             );
           }
+          // 可读材料清单必须进入真实 provider request；这里只附带来源/URI/SHA/能力字段，不注入上游正文。
+          effectivePrompt = appendSingleWorkerMaterialBriefToPrompt(
+            effectivePrompt,
+            runtimeContext,
+          );
           const legacySystemPrompt = normalizeOptionalString(hookResult?.systemPrompt) ?? "";
           if (legacySystemPrompt) {
             applySystemPromptOverrideToSession(activeSession, legacySystemPrompt);
@@ -3525,6 +4390,41 @@ export async function runEmbeddedAttempt(
         promptError: promptError ? formatErrorMessage(promptError) : undefined,
       });
       trajectoryEndRecorded = true;
+      if (runtimeContext) {
+        if (firstResponseWritePromise) {
+          firstResponsePath = await firstResponseWritePromise;
+        }
+        const status: "none" | "recorded" = runtimeToolCalls.length > 0 ? "recorded" : "none";
+        toolCallsStatus = status;
+        toolCallsPath = path.join(runtimeContext.evidenceDir, "tool-calls.json");
+        // 每个 worker 回合最后统一落工具调用证据，控制侧 guard 只认这个结构化文件。
+        await writeJsonWithRuntimeMarkers({
+          filePath: toolCallsPath,
+          payload: buildToolCallsEvidencePayload({
+            status,
+            calls: runtimeToolCalls,
+            markers: runtimeContext.markers,
+          }),
+          context: runtimeContext,
+        });
+        if (!rawOutputPath && !firstResponseStopRequested) {
+          rawOutputPath = path.join(runtimeContext.evidenceDir, "raw-output.md");
+          const rawOutput = assistantTexts.length > 0 ? assistantTexts.join("\n\n") : "";
+          await fs.writeFile(rawOutputPath, rawOutput, "utf8");
+        }
+      }
+      const failureReason =
+        promptError != null
+          ? formatErrorMessage(promptError)
+          : timedOut
+            ? idleTimedOut
+              ? "idle_timeout"
+              : "timeout"
+            : aborted && !firstResponseStopRequested
+              ? externalAbort
+                ? "aborted_by_caller"
+                : "aborted"
+              : undefined;
 
       return {
         replayMetadata,
@@ -3570,6 +4470,17 @@ export async function runEmbeddedAttempt(
         // Client tool call detected (OpenResponses hosted tools)
         clientToolCall: clientToolCallDetected ?? undefined,
         yieldDetected: yieldDetected || undefined,
+        providerRequestPath,
+        visibleToolsPath,
+        providerRequestsJsonlPath,
+        workspaceEvidencePath,
+        firstResponsePath,
+        toolCallsPath,
+        toolCallsStatus,
+        rawOutputPath,
+        openvikingReceiptPath,
+        firstResponseStopRequested,
+        failureReason,
       };
     } finally {
       if (trajectoryRecorder && !trajectoryEndRecorded) {

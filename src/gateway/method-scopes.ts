@@ -131,6 +131,7 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "send",
     "poll",
     "agent",
+    "agent.runSingleWorker",
     "agent.wait",
     "wake",
     "talk.mode",

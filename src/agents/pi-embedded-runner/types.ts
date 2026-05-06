@@ -47,6 +47,19 @@ export type EmbeddedPiAgentMeta = {
     cacheWrite?: number;
     total?: number;
   };
+  singleWorkerEvidence?: {
+    workspaceEvidencePath?: string;
+    providerRequestPath?: string;
+    providerRequestsJsonlPath?: string;
+    visibleToolsPath?: string;
+    firstResponsePath?: string;
+    toolCallsPath?: string;
+    toolCallsStatus?: "none" | "recorded";
+    rawOutputPath?: string;
+    openvikingReceiptPath?: string;
+    firstResponseStopRequested?: boolean;
+    failureReason?: string;
+  };
 };
 
 export type TraceAttempt = {

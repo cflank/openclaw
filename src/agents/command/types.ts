@@ -4,6 +4,7 @@ import type { PromptMode } from "../../agents/system-prompt.types.js";
 import type { ChannelOutboundTargetMode } from "../../channels/plugins/types.public.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
+import type { SingleWorkerCommand } from "../pi-embedded-runner/run/params.js";
 import type { AgentStreamParams, ClientToolDefinition } from "./shared-types.js";
 
 /** Image content block for Claude API multimodal messages. */
@@ -116,6 +117,8 @@ export type AgentCommandOpts = {
   promptMode?: PromptMode;
   /** Internal ACP-ready session turn source. Manual spawn turns bypass only the dispatch gate. */
   acpTurnSource?: AcpTurnSource;
+  /** control migration seam: formal carrier for claw-trade single-worker command. */
+  singleWorkerCommand?: SingleWorkerCommand;
 };
 
 export type AgentCommandIngressOpts = Omit<

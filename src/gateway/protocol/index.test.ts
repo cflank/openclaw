@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { TALK_TEST_PROVIDER_ID } from "../../test-utils/talk-test-provider.js";
 import {
   formatValidationErrors,
+  validateAgentRunSingleWorkerParams,
   validateModelsListParams,
   validateNodeEventResult,
   validateNodePresenceAlivePayload,
@@ -176,6 +177,50 @@ describe("validateWakeParams", () => {
         anotherExtra: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("validateAgentRunSingleWorkerParams", () => {
+  it("accepts a complete single-worker command payload", () => {
+    expect(
+      validateAgentRunSingleWorkerParams({
+        command: {
+          agent: "market_analyst",
+          worker_id: "market_analyst",
+          profile: "US",
+          stage: "frontline",
+          run_id: "run-1",
+          call_id: "call-1",
+          runtime_vars: {
+            ticker: "AAPL",
+            company_name: "Apple",
+          },
+          allowed_tools: ["market_data", "openviking.write_material"],
+          upstream_materials: [],
+          openviking_read_capabilities: [],
+          material_target: {
+            run_id: "run-1",
+            call_id: "call-1",
+            worker_id: "market_analyst",
+            stage: "frontline",
+            target_name: "report",
+            l1_uri: "viking://l1",
+            l2_prefix: "viking://l2",
+          },
+          read_policy: {
+            default_layer: "L1",
+            allow_l2_when: ["chart_required"],
+            forbid_compact_as_writing_source: true,
+          },
+          evidence_dir: "runs/run-1/calls/call-1",
+          stop_after_first_response: true,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects payloads that do not provide command", () => {
+    expect(validateAgentRunSingleWorkerParams({})).toBe(false);
   });
 });
 

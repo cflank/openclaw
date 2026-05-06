@@ -8,6 +8,8 @@ import {
   type AgentIdentityResult,
   AgentIdentityResultSchema,
   AgentParamsSchema,
+  type AgentRunSingleWorkerParams,
+  AgentRunSingleWorkerParamsSchema,
   type MessageActionParams,
   MessageActionParamsSchema,
   type AgentSummary,
@@ -372,6 +374,9 @@ export const validatePollParams = ajv.compile<PollParams>(PollParamsSchema);
 export const validateAgentParams = ajv.compile(AgentParamsSchema);
 export const validateAgentIdentityParams =
   ajv.compile<AgentIdentityParams>(AgentIdentityParamsSchema);
+export const validateAgentRunSingleWorkerParams = ajv.compile<AgentRunSingleWorkerParams>(
+  AgentRunSingleWorkerParamsSchema,
+);
 export const validateAgentWaitParams = ajv.compile<AgentWaitParams>(AgentWaitParamsSchema);
 export const validateWakeParams = ajv.compile<WakeParams>(WakeParamsSchema);
 export const validateAgentsListParams = ajv.compile<AgentsListParams>(AgentsListParamsSchema);
@@ -679,6 +684,7 @@ export {
   AgentParamsSchema,
   AgentIdentityParamsSchema,
   AgentIdentityResultSchema,
+  AgentRunSingleWorkerParamsSchema,
   WakeParamsSchema,
   PushTestParamsSchema,
   PushTestResultSchema,
@@ -830,6 +836,7 @@ export type {
   AgentEvent,
   AgentIdentityParams,
   AgentIdentityResult,
+  AgentRunSingleWorkerParams,
   AgentWaitParams,
   ChatEvent,
   TickEvent,

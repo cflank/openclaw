@@ -207,6 +207,83 @@ export const AgentWaitParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const SingleWorkerMaterialReadRefSchema = Type.Object(
+  {
+    material_id: NonEmptyString,
+    capability_id: NonEmptyString,
+    worker_id: NonEmptyString,
+    stage: NonEmptyString,
+    l1_uri: NonEmptyString,
+    l1_sha256: NonEmptyString,
+    l2_index_uri: Type.Optional(Type.Union([Type.Null(), Type.String()])),
+    l2_allowed_prefix: Type.Optional(Type.Union([Type.Null(), Type.String()])),
+    call_id: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+const SingleWorkerReadCapabilitySchema = Type.Object(
+  {
+    capability_id: NonEmptyString,
+    material_id: NonEmptyString,
+    allowed_l1_uri: NonEmptyString,
+    allowed_l1_sha256: NonEmptyString,
+    allowed_l2_prefix: Type.Optional(Type.Union([Type.Null(), Type.String()])),
+    allowed_l2_index_sha256: Type.Optional(Type.Union([Type.Null(), Type.String()])),
+    manifest_entry_sha256: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+const SingleWorkerMaterialTargetSchema = Type.Object(
+  {
+    run_id: NonEmptyString,
+    call_id: NonEmptyString,
+    worker_id: NonEmptyString,
+    stage: NonEmptyString,
+    target_name: NonEmptyString,
+    l1_uri: NonEmptyString,
+    l2_prefix: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+const SingleWorkerReadPolicySchema = Type.Object(
+  {
+    default_layer: NonEmptyString,
+    allow_l2_when: Type.Array(NonEmptyString),
+    forbid_compact_as_writing_source: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+
+export const SingleWorkerCommandSchema = Type.Object(
+  {
+    agent: NonEmptyString,
+    worker_id: NonEmptyString,
+    profile: NonEmptyString,
+    stage: NonEmptyString,
+    run_id: NonEmptyString,
+    call_id: NonEmptyString,
+    runtime_vars: Type.Record(Type.String(), Type.String()),
+    allowed_tools: Type.Array(NonEmptyString, { minItems: 1 }),
+    upstream_materials: Type.Array(SingleWorkerMaterialReadRefSchema),
+    openviking_read_capabilities: Type.Array(SingleWorkerReadCapabilitySchema),
+    material_target: SingleWorkerMaterialTargetSchema,
+    read_policy: SingleWorkerReadPolicySchema,
+    evidence_dir: NonEmptyString,
+    stop_after_first_response: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentRunSingleWorkerParamsSchema = Type.Object(
+  {
+    command: SingleWorkerCommandSchema,
+  },
+  { additionalProperties: false },
+);
+
 export const WakeParamsSchema = Type.Object(
   {
     mode: Type.Union([Type.Literal("now"), Type.Literal("next-heartbeat")]),

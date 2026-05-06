@@ -166,6 +166,10 @@ type AgentCommandCall = Record<string, unknown>;
 
 type AgentIdentityGetHandlerArgs = Parameters<(typeof agentHandlers)["agent.identity.get"]>[0];
 type AgentIdentityGetParams = AgentIdentityGetHandlerArgs["params"];
+type AgentRunSingleWorkerHandlerArgs = Parameters<
+  (typeof agentHandlers)["agent.runSingleWorker"]
+>[0];
+type AgentRunSingleWorkerParams = AgentRunSingleWorkerHandlerArgs["params"];
 
 async function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) {
   vi.useFakeTimers();
@@ -216,6 +220,43 @@ async function waitForAcceptedRunDispatch(respond: ReturnType<typeof vi.fn>) {
       return;
     }
   }
+}
+
+async function writeSingleWorkerEvidenceFiles(params: {
+  evidenceDir: string;
+  includeFullRun: boolean;
+  providerRequestPayload: Record<string, unknown>;
+}) {
+  await fs.mkdir(params.evidenceDir, { recursive: true });
+  const providerRequestPath = `${params.evidenceDir}/provider-request.json`;
+  const workspaceEvidencePath = `${params.evidenceDir}/workspace-evidence.json`;
+  const visibleToolsPath = `${params.evidenceDir}/visible-tools.json`;
+  const firstResponsePath = `${params.evidenceDir}/first-response.json`;
+  const toolCallsPath = `${params.evidenceDir}/tool-calls.json`;
+  const rawOutputPath = `${params.evidenceDir}/raw-output.md`;
+  const openvikingReceiptPath = `${params.evidenceDir}/openviking-receipt.json`;
+  await fs.writeFile(providerRequestPath, JSON.stringify(params.providerRequestPayload), "utf8");
+  await fs.writeFile(workspaceEvidencePath, JSON.stringify({ source: "workspace" }), "utf8");
+  await fs.writeFile(visibleToolsPath, JSON.stringify({ source: "visible_tools" }), "utf8");
+  await fs.writeFile(firstResponsePath, JSON.stringify({ source: "first_response" }), "utf8");
+  await fs.writeFile(
+    toolCallsPath,
+    JSON.stringify({ source: "tool_calls", status: "none" }),
+    "utf8",
+  );
+  if (params.includeFullRun) {
+    await fs.writeFile(rawOutputPath, "raw output", "utf8");
+    await fs.writeFile(openvikingReceiptPath, JSON.stringify({ receipt_id: "r-1" }), "utf8");
+  }
+  return {
+    workspaceEvidencePath,
+    providerRequestPath,
+    visibleToolsPath,
+    firstResponsePath,
+    toolCallsPath,
+    rawOutputPath,
+    openvikingReceiptPath,
+  };
 }
 
 function mockMainSessionEntry(entry: Record<string, unknown>, cfg: Record<string, unknown> = {}) {
@@ -397,6 +438,69 @@ async function invokeAgentIdentityGet(
   return respond;
 }
 
+async function invokeAgentRunSingleWorker(
+  params: AgentRunSingleWorkerParams,
+  options?: {
+    respond?: ReturnType<typeof vi.fn>;
+    reqId?: string;
+    context?: GatewayRequestContext;
+  },
+) {
+  const respond = options?.respond ?? vi.fn();
+  await agentHandlers["agent.runSingleWorker"]({
+    params,
+    respond: respond as never,
+    context: options?.context ?? makeContext(),
+    req: {
+      type: "req",
+      id: options?.reqId ?? "agent-run-single-worker-test-req",
+      method: "agent.runSingleWorker",
+    },
+    client: null,
+    isWebchatConnect: () => false,
+  });
+  return respond;
+}
+
+function buildSingleWorkerRunParams(params: {
+  evidenceDir: string;
+  stopAfterFirstResponse: boolean;
+}): AgentRunSingleWorkerParams {
+  return {
+    command: {
+      agent: "market_analyst",
+      worker_id: "market_analyst",
+      profile: "US",
+      stage: "frontline",
+      run_id: "run-1",
+      call_id: "call-1",
+      runtime_vars: {
+        ticker: "AAPL",
+        company_name: "Apple",
+      },
+      allowed_tools: ["market_data", "openviking.write_material"],
+      upstream_materials: [],
+      openviking_read_capabilities: [],
+      material_target: {
+        run_id: "run-1",
+        call_id: "call-1",
+        worker_id: "market_analyst",
+        stage: "frontline",
+        target_name: "report",
+        l1_uri: "viking://l1",
+        l2_prefix: "viking://l2",
+      },
+      read_policy: {
+        default_layer: "L1",
+        allow_l2_when: ["chart_required"],
+        forbid_compact_as_writing_source: true,
+      },
+      evidence_dir: params.evidenceDir,
+      stop_after_first_response: params.stopAfterFirstResponse,
+    },
+  };
+}
+
 describe("gateway agent handler", () => {
   afterEach(() => {
     if (ORIGINAL_STATE_DIR === undefined) {
@@ -410,6 +514,353 @@ describe("gateway agent handler", () => {
     mocks.resolveExplicitAgentSessionKey.mockReset().mockReturnValue(undefined);
     mocks.resolveBareResetBootstrapFileAccess.mockReset().mockReturnValue(true);
     mocks.listAgentIds.mockReset().mockReturnValue(["main"]);
+  });
+
+  it("registers agent.runSingleWorker as a dedicated handler", () => {
+    expect(typeof agentHandlers["agent.runSingleWorker"]).toBe("function");
+    expect(agentHandlers["agent.runSingleWorker"]).not.toBe(agentHandlers.agent);
+  });
+
+  it("rejects invalid agent.runSingleWorker params without falling back to agent", async () => {
+    mocks.agentCommand.mockReset();
+    const respond = await invokeAgentRunSingleWorker(
+      {
+        message: "hi",
+        idempotencyKey: "idem-not-a-single-worker-command",
+      } as unknown as AgentRunSingleWorkerParams,
+      { reqId: "req-invalid-agent-run-single-worker" },
+    );
+
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        code: "INVALID_REQUEST",
+        message: expect.stringContaining("invalid agent.runSingleWorker params"),
+      }),
+    );
+    expect(
+      String((respond.mock.calls[0]?.[2] as { message?: string } | undefined)?.message ?? ""),
+    ).not.toContain("invalid agent params");
+  });
+
+  it("returns mapped single-worker evidence and captured provider request id on successful full runs", async () => {
+    await withTempDir({ prefix: "openclaw-gateway-single-worker-success-" }, async (root) => {
+      const evidenceDir = `${root}/evidence`;
+      const evidence = await writeSingleWorkerEvidenceFiles({
+        evidenceDir,
+        includeFullRun: true,
+        providerRequestPayload: {
+          source: "provider_request_capture",
+          payload: {
+            request_id: "req_provider_123",
+          },
+        },
+      });
+      mocks.agentCommand.mockResolvedValue({
+        meta: {
+          agentMeta: {
+            singleWorkerEvidence: {
+              workspaceEvidencePath: evidence.workspaceEvidencePath,
+              providerRequestPath: evidence.providerRequestPath,
+              visibleToolsPath: evidence.visibleToolsPath,
+              firstResponsePath: evidence.firstResponsePath,
+              toolCallsStatus: "recorded",
+              toolCallsPath: evidence.toolCallsPath,
+              rawOutputPath: evidence.rawOutputPath,
+              openvikingReceiptPath: evidence.openvikingReceiptPath,
+            },
+          },
+        },
+      });
+
+      const respond = await invokeAgentRunSingleWorker(
+        buildSingleWorkerRunParams({
+          evidenceDir,
+          stopAfterFirstResponse: false,
+        }),
+        { reqId: "single-worker-success-full" },
+      );
+
+      const [ok, payload, error, meta] = respond.mock.calls[0] as [
+        boolean,
+        Record<string, unknown>,
+        unknown,
+        Record<string, unknown>,
+      ];
+      expect(ok).toBe(true);
+      expect(error).toBeUndefined();
+      expect(meta.runId).toEqual(expect.any(String));
+      expect(payload).toMatchObject({
+        status: "succeeded",
+        openclaw_run_id: expect.any(String),
+        provider_request_id: "req_provider_123",
+        provider_request_id_status: "captured",
+        workspace_evidence_path: evidence.workspaceEvidencePath,
+        provider_request_path: evidence.providerRequestPath,
+        visible_tools_path: evidence.visibleToolsPath,
+        first_response_path: evidence.firstResponsePath,
+        tool_calls_status: "recorded",
+        tool_calls_path: evidence.toolCallsPath,
+        raw_output_path: evidence.rawOutputPath,
+        openviking_receipt_path: evidence.openvikingReceiptPath,
+      });
+    });
+  });
+
+  it("returns provider_request_id_status=not_available when capture has no request id", async () => {
+    await withTempDir(
+      { prefix: "openclaw-gateway-single-worker-no-provider-id-" },
+      async (root) => {
+        const evidenceDir = `${root}/evidence`;
+        const evidence = await writeSingleWorkerEvidenceFiles({
+          evidenceDir,
+          includeFullRun: false,
+          providerRequestPayload: {
+            source: "provider_request_capture",
+            payload: {
+              messages: [{ role: "user", content: "hello" }],
+            },
+          },
+        });
+        mocks.agentCommand.mockResolvedValue({
+          meta: {
+            agentMeta: {
+              singleWorkerEvidence: {
+                workspaceEvidencePath: evidence.workspaceEvidencePath,
+                providerRequestPath: evidence.providerRequestPath,
+                visibleToolsPath: evidence.visibleToolsPath,
+                firstResponsePath: evidence.firstResponsePath,
+                toolCallsStatus: "none",
+                toolCallsPath: evidence.toolCallsPath,
+              },
+            },
+          },
+        });
+
+        const respond = await invokeAgentRunSingleWorker(
+          buildSingleWorkerRunParams({
+            evidenceDir,
+            stopAfterFirstResponse: true,
+          }),
+          { reqId: "single-worker-success-no-provider-id" },
+        );
+
+        const [ok, payload] = respond.mock.calls[0] as [boolean, Record<string, unknown>];
+        expect(ok).toBe(true);
+        expect(payload.provider_request_id_status).toBe("not_available");
+        expect(payload.provider_request_id).toBeUndefined();
+      },
+    );
+  });
+
+  it("does not capture provider request id from free text in payload content", async () => {
+    await withTempDir(
+      { prefix: "openclaw-gateway-single-worker-provider-id-in-text-" },
+      async (root) => {
+        const evidenceDir = `${root}/evidence`;
+        const evidence = await writeSingleWorkerEvidenceFiles({
+          evidenceDir,
+          includeFullRun: false,
+          providerRequestPayload: {
+            source: "provider_request_capture request_id=req_from_source_text",
+            path: "/tmp/request_id=req_from_path_text",
+            hash: "sha256:request_id=req_from_hash_text",
+            payload: {
+              messages: [
+                {
+                  role: "user",
+                  content: "debug note: request_id=req_fake_text",
+                },
+              ],
+              content: "request_id=req_fake_text_2",
+            },
+          },
+        });
+        mocks.agentCommand.mockResolvedValue({
+          meta: {
+            agentMeta: {
+              singleWorkerEvidence: {
+                workspaceEvidencePath: evidence.workspaceEvidencePath,
+                providerRequestPath: evidence.providerRequestPath,
+                visibleToolsPath: evidence.visibleToolsPath,
+                firstResponsePath: evidence.firstResponsePath,
+                toolCallsStatus: "none",
+                toolCallsPath: evidence.toolCallsPath,
+              },
+            },
+          },
+        });
+
+        const respond = await invokeAgentRunSingleWorker(
+          buildSingleWorkerRunParams({
+            evidenceDir,
+            stopAfterFirstResponse: true,
+          }),
+          { reqId: "single-worker-provider-id-in-text" },
+        );
+
+        const [ok, payload] = respond.mock.calls[0] as [boolean, Record<string, unknown>];
+        expect(ok).toBe(true);
+        expect(payload.provider_request_id_status).toBe("not_available");
+        expect(payload.provider_request_id).toBeUndefined();
+      },
+    );
+  });
+
+  it("rejects evidence paths outside evidence_dir and does not echo forged paths", async () => {
+    await withTempDir({ prefix: "openclaw-gateway-single-worker-forged-path-" }, async (root) => {
+      const evidenceDir = `${root}/evidence`;
+      const outsideDir = `${root}/outside`;
+      await fs.mkdir(outsideDir, { recursive: true });
+      const forgedPath = `${outsideDir}/provider-request.json`;
+      await fs.writeFile(
+        forgedPath,
+        JSON.stringify({
+          source: "provider_request_capture",
+          payload: { request_id: "req_forged" },
+        }),
+        "utf8",
+      );
+      mocks.agentCommand.mockResolvedValue({
+        meta: {
+          agentMeta: {
+            singleWorkerEvidence: {
+              workspaceEvidencePath: `${outsideDir}/workspace-evidence.json`,
+              providerRequestPath: forgedPath,
+              visibleToolsPath: `${outsideDir}/visible-tools.json`,
+              firstResponsePath: `${outsideDir}/first-response.json`,
+              toolCallsStatus: "none",
+              toolCallsPath: `${outsideDir}/tool-calls.json`,
+            },
+          },
+        },
+      });
+
+      const respond = await invokeAgentRunSingleWorker(
+        buildSingleWorkerRunParams({
+          evidenceDir,
+          stopAfterFirstResponse: true,
+        }),
+        { reqId: "single-worker-forged-path" },
+      );
+
+      const [ok, payload] = respond.mock.calls[0] as [boolean, Record<string, unknown>];
+      expect(ok).toBe(false);
+      expect(payload.status).toBe("failed");
+      expect(payload.failure_reason).toContain(
+        "single worker evidence missing workspaceEvidencePath",
+      );
+      expect(payload.provider_request_path).toBeUndefined();
+      expect(payload.workspace_evidence_path).toBeUndefined();
+    });
+  });
+
+  it("rejects symlink evidence that resolves outside evidence_dir", async () => {
+    await withTempDir({ prefix: "openclaw-gateway-single-worker-symlink-path-" }, async (root) => {
+      const evidenceDir = `${root}/evidence`;
+      const outsideDir = `${root}/outside`;
+      const evidence = await writeSingleWorkerEvidenceFiles({
+        evidenceDir,
+        includeFullRun: false,
+        providerRequestPayload: {
+          source: "provider_request_capture",
+          payload: {
+            request_id: "req_inside",
+          },
+        },
+      });
+      await fs.mkdir(outsideDir, { recursive: true });
+      const outsideProviderRequestPath = `${outsideDir}/provider-request.json`;
+      await fs.writeFile(
+        outsideProviderRequestPath,
+        JSON.stringify({
+          source: "provider_request_capture",
+          payload: { request_id: "req_outside" },
+        }),
+        "utf8",
+      );
+      await fs.rm(evidence.providerRequestPath);
+      await fs.symlink(outsideProviderRequestPath, evidence.providerRequestPath);
+      mocks.agentCommand.mockResolvedValue({
+        meta: {
+          agentMeta: {
+            singleWorkerEvidence: {
+              workspaceEvidencePath: evidence.workspaceEvidencePath,
+              providerRequestPath: evidence.providerRequestPath,
+              visibleToolsPath: evidence.visibleToolsPath,
+              firstResponsePath: evidence.firstResponsePath,
+              toolCallsStatus: "none",
+              toolCallsPath: evidence.toolCallsPath,
+            },
+          },
+        },
+      });
+
+      const respond = await invokeAgentRunSingleWorker(
+        buildSingleWorkerRunParams({
+          evidenceDir,
+          stopAfterFirstResponse: true,
+        }),
+        { reqId: "single-worker-symlink-path" },
+      );
+
+      const [ok, payload] = respond.mock.calls[0] as [boolean, Record<string, unknown>];
+      expect(ok).toBe(false);
+      expect(payload.status).toBe("failed");
+      expect(payload.failure_reason).toContain(
+        "single worker evidence missing providerRequestPath",
+      );
+      expect(payload.provider_request_path).toBeUndefined();
+      expect(JSON.stringify(payload)).not.toContain(outsideDir);
+    });
+  });
+
+  it("supports legacy meta.singleWorkerEvidence and returns first_response evidence", async () => {
+    await withTempDir({ prefix: "openclaw-gateway-single-worker-legacy-meta-" }, async (root) => {
+      const evidenceDir = `${root}/evidence`;
+      const evidence = await writeSingleWorkerEvidenceFiles({
+        evidenceDir,
+        includeFullRun: false,
+        providerRequestPayload: {
+          source: "provider_request_capture",
+          payload: {
+            request_id: "req_legacy_123",
+          },
+        },
+      });
+      mocks.agentCommand.mockResolvedValue({
+        meta: {
+          singleWorkerEvidence: {
+            workspaceEvidencePath: evidence.workspaceEvidencePath,
+            providerRequestPath: evidence.providerRequestPath,
+            visibleToolsPath: evidence.visibleToolsPath,
+            firstResponsePath: evidence.firstResponsePath,
+            toolCallsStatus: "recorded",
+            toolCallsPath: evidence.toolCallsPath,
+          },
+        },
+      });
+
+      const respond = await invokeAgentRunSingleWorker(
+        buildSingleWorkerRunParams({
+          evidenceDir,
+          stopAfterFirstResponse: true,
+        }),
+        { reqId: "single-worker-legacy-meta" },
+      );
+
+      const [ok, payload] = respond.mock.calls[0] as [boolean, Record<string, unknown>];
+      expect(ok).toBe(true);
+      expect(payload).toMatchObject({
+        status: "succeeded",
+        provider_request_id: "req_legacy_123",
+        provider_request_id_status: "captured",
+        first_response_path: evidence.firstResponsePath,
+        tool_calls_status: "recorded",
+      });
+    });
   });
 
   it("preserves ACP metadata from the current stored session entry", async () => {
