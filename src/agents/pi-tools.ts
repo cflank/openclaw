@@ -344,6 +344,8 @@ export function createOpenClawCodingTools(options?: {
   allowGatewaySubagentBinding?: boolean;
   /** Runtime-scoped explicit allowlist used to materialize matching plugin tools. */
   runtimeToolAllowlist?: string[];
+  /** Trusted per-turn single-worker command made available to plugin tools. */
+  singleWorkerCommand?: unknown;
   /** If true, the model has native vision capability */
   modelHasVision?: boolean;
   /** Require explicit message targets (no implicit last-route sends). */
@@ -431,6 +433,7 @@ export function createOpenClawCodingTools(options?: {
   const runtimeProfileAlsoAllow = [
     ...(options?.forceMessageTool ? ["message"] : []),
     ...(forceHeartbeatTool ? [HEARTBEAT_RESPONSE_TOOL_NAME] : []),
+    ...(options?.runtimeToolAllowlist ?? []),
   ];
   const profilePolicyWithAlsoAllow = mergeAlsoAllowPolicy(profilePolicy, [
     ...(profileAlsoAllow ?? []),
@@ -617,6 +620,9 @@ export function createOpenClawCodingTools(options?: {
     subagentPolicy,
     options?.runtimeToolAllowlist ? { allow: options.runtimeToolAllowlist } : undefined,
   ]);
+  const runtimeToolPolicy = options?.runtimeToolAllowlist
+    ? { allow: options.runtimeToolAllowlist }
+    : undefined;
   const pluginToolsOnly = includeCoreTools
     ? []
     : resolveOpenClawPluginToolsForOptions({
@@ -633,6 +639,7 @@ export function createOpenClawCodingTools(options?: {
           requesterSenderId: options?.senderId,
           senderIsOwner: options?.senderIsOwner,
           sessionId: options?.sessionId,
+          singleWorkerCommand: options?.singleWorkerCommand,
           sandboxBrowserBridgeUrl: sandbox?.browser?.bridgeUrl,
           allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
           sandboxed: !!sandbox,
@@ -794,6 +801,7 @@ export function createOpenClawCodingTools(options?: {
       }),
       { policy: sandboxToolPolicy, label: "sandbox tools.allow" },
       { policy: subagentPolicy, label: "subagent tools.allow" },
+      { policy: runtimeToolPolicy, label: "runtime tools.allow" },
     ],
   });
   options?.recordToolPrepStage?.("authorization-policy");

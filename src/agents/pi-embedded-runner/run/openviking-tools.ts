@@ -70,8 +70,6 @@ const PM_DECISION_PARAMETERS = Type.Object(
 
 const WRITE_MATERIAL_BASE_PARAMETERS = Type.Object(
   {
-    uri: Type.Optional(Type.String()),
-    target: Type.Optional(Type.String()),
     content: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
@@ -79,8 +77,6 @@ const WRITE_MATERIAL_BASE_PARAMETERS = Type.Object(
 
 const WRITE_MATERIAL_PM_PARAMETERS = Type.Object(
   {
-    uri: Type.Optional(Type.String()),
-    target: Type.Optional(Type.String()),
     content: Type.Optional(Type.String()),
     pm_decision: Type.Optional(PM_DECISION_PARAMETERS),
   },
@@ -98,7 +94,7 @@ const READ_WITH_CAPABILITY_PARAMETERS = Type.Object(
 
 type MaterialClaimsPayload = {
   schema_version: "control.claims.v1";
-  source: "openclaw_openviking_write_material";
+  source: "openclaw_openviking_write_material" | "openclaw_runtime_material_save";
   run_id: string;
   call_id: string;
   worker_id: string;
@@ -267,7 +263,7 @@ function pickStatTargetNode(raw: unknown, targetName: string): Record<string, un
       }
     }
   }
-  throw new Error("openviking.write_material verification stat target node not found");
+  throw new Error("openviking_write_material verification stat target node not found");
 }
 
 function extractStatIntegrity(params: {
@@ -280,7 +276,7 @@ function extractStatIntegrity(params: {
     toNonNegativeInteger(statNode.size) ??
     toNonNegativeInteger(statNode.file_size);
   if (sizeBytes === undefined) {
-    throw new Error("openviking.write_material verification missing stat size after write");
+    throw new Error("openviking_write_material verification missing stat size after write");
   }
   const checksums = asRecord(statNode.checksums);
   const shaFields = [
@@ -297,7 +293,7 @@ function extractStatIntegrity(params: {
     }
     const normalized = toSha256(candidate);
     if (!normalized) {
-      throw new Error("openviking.write_material verification stat sha field is invalid");
+      throw new Error("openviking_write_material verification stat sha field is invalid");
     }
     sha256 = normalized;
     break;
@@ -310,7 +306,7 @@ function parseL2IndexEntries(indexContent: string): Array<{ uri: string; sha256:
   try {
     parsed = JSON.parse(indexContent);
   } catch {
-    throw new Error("openviking.read_with_capability L2 index content is not valid JSON");
+    throw new Error("openviking_read_with_capability L2 index content is not valid JSON");
   }
   const parsedRecord = asRecord(parsed);
   const entriesRaw = Array.isArray(parsedRecord.entries)
@@ -319,7 +315,7 @@ function parseL2IndexEntries(indexContent: string): Array<{ uri: string; sha256:
       ? (asRecord(parsedRecord.result).entries as unknown[])
       : null;
   if (!entriesRaw) {
-    throw new Error("openviking.read_with_capability L2 index missing entries");
+    throw new Error("openviking_read_with_capability L2 index missing entries");
   }
   const entries: Array<{ uri: string; sha256: string }> = [];
   for (const entryRaw of entriesRaw) {
@@ -333,7 +329,7 @@ function parseL2IndexEntries(indexContent: string): Array<{ uri: string; sha256:
     entries.push({ uri, sha256 });
   }
   if (entries.length === 0) {
-    throw new Error("openviking.read_with_capability L2 index has no valid uri/sha256 entries");
+    throw new Error("openviking_read_with_capability L2 index has no valid uri/sha256 entries");
   }
   return entries;
 }
@@ -558,7 +554,7 @@ type VerifiedWriteResult = {
 function resolveL2IndexUri(l2PrefixRaw: string): string {
   const l2Prefix = l2PrefixRaw.trim();
   if (!l2Prefix) {
-    throw new Error("openviking.write_material material_target.l2_prefix is required");
+    throw new Error("openviking_write_material material_target.l2_prefix is required");
   }
   const normalizedPrefix = l2Prefix.endsWith("/") ? l2Prefix : `${l2Prefix}/`;
   return `${normalizedPrefix}index.json`;
@@ -660,23 +656,23 @@ async function writeAndVerifyOpenVikingFile(params: {
   const actualSize = downloadBackBytes.byteLength;
   // 正式指纹只认 content/download 原始字节；content/read 仅用于文本展示/可读性校验。
   if (actualSha !== expectedWriteSha && actualSha !== expectedSha) {
-    throw new Error("openviking.write_material verification sha mismatch after download");
+    throw new Error("openviking_write_material verification sha mismatch after download");
   }
   if (actualSize !== expectedWriteSize && actualSize !== expectedSize) {
-    throw new Error("openviking.write_material verification size mismatch after download");
+    throw new Error("openviking_write_material verification size mismatch after download");
   }
   if (sha256OfUtf8(contentReadBackNormalized) !== expectedSha) {
-    throw new Error("openviking.write_material verification sha mismatch after write");
+    throw new Error("openviking_write_material verification sha mismatch after write");
   }
   if (Buffer.byteLength(contentReadBackNormalized, "utf8") !== expectedSize) {
-    throw new Error("openviking.write_material verification size mismatch after write");
+    throw new Error("openviking_write_material verification size mismatch after write");
   }
   if (
     statIntegrity.sizeBytes !== expectedWriteSize &&
     statIntegrity.sizeBytes !== expectedSize &&
     statIntegrity.sizeBytes !== actualSize
   ) {
-    throw new Error("openviking.write_material verification stat size mismatch after readback");
+    throw new Error("openviking_write_material verification stat size mismatch after readback");
   }
   if (
     statIntegrity.sha256 &&
@@ -684,7 +680,7 @@ async function writeAndVerifyOpenVikingFile(params: {
     statIntegrity.sha256 !== expectedSha &&
     statIntegrity.sha256 !== actualSha
   ) {
-    throw new Error("openviking.write_material verification stat sha mismatch");
+    throw new Error("openviking_write_material verification stat sha mismatch");
   }
 
   return {
@@ -730,8 +726,8 @@ async function writeReceipt(params: {
         target_name: params.context.command.material_target.target_name,
         verification: {
           verified: true,
-          // 兼容现有 guard 字段名；真实校验对象仍是下载回来的标准内容字节。
-          method: "openviking_write_then_stat_then_readback_sha_size_identity_check",
+          // 兼容现有 guard 字段名；真实校验对象是下载回来的标准内容字节。
+          method: "openviking_write_then_stat_then_downloadback_sha_size_identity_check",
           expected_write_sha256: params.expectedWriteSha256,
           expected_write_size_bytes: params.expectedWriteSizeBytes,
           expected_sha256: params.sha256,
@@ -807,6 +803,7 @@ async function writeMaterialClaimsFile(params: {
   uri: string;
   sha256: string;
   sizeBytes: number;
+  source: MaterialClaimsPayload["source"];
 }): Promise<{ claimsPath: string; payload: MaterialClaimsPayload }> {
   await fs.mkdir(params.context.evidenceDir, { recursive: true });
   const materialId = buildMaterialId({
@@ -820,7 +817,7 @@ async function writeMaterialClaimsFile(params: {
   });
   const payload: MaterialClaimsPayload = {
     schema_version: "control.claims.v1",
-    source: "openclaw_openviking_write_material",
+    source: params.source,
     run_id: params.context.command.run_id,
     call_id: params.context.command.call_id,
     worker_id: params.context.command.worker_id,
@@ -839,6 +836,64 @@ async function writeMaterialClaimsFile(params: {
   return { claimsPath, payload };
 }
 
+export async function writeOpenVikingMaterialFromRuntime(params: {
+  context: RuntimeContext;
+  content: string;
+  options?: OpenVikingToolOptions;
+}): Promise<{
+  receiptPath: string;
+  claimsPath: string;
+  uri: string;
+  sha256: string;
+}> {
+  const content = params.content;
+  if (typeof content !== "string" || content.trim().length === 0) {
+    throw new Error("runtime material content must be non-empty");
+  }
+  const baseUrl = resolveBaseUrl(params.options);
+  const targetUri = resolveWriteMaterialTargetUri(params.context, {});
+  const httpOperations: OpenVikingHttpOperation[] = [];
+  const l1WriteResult = await writeAndVerifyWithRetry({
+    baseUrl,
+    uri: targetUri,
+    content,
+    httpOperations,
+  });
+  const l2IndexUri = resolveL2IndexUri(params.context.command.material_target.l2_prefix);
+  await writeAndVerifyWithRetry({
+    baseUrl,
+    uri: l2IndexUri,
+    content: buildEmptyL2IndexContent(params.context),
+    httpOperations,
+    operationSuffix: ".l2_index",
+    retryLimit: OPENVIKING_L2_INDEX_WRITE_RETRY_LIMIT,
+  });
+  const receiptPath = await writeReceipt({
+    context: params.context,
+    uri: targetUri,
+    sha256: l1WriteResult.actualSha,
+    sizeBytes: l1WriteResult.actualSize,
+    expectedWriteSha256: l1WriteResult.expectedWriteSha,
+    expectedWriteSizeBytes: l1WriteResult.expectedWriteSize,
+    statSizeBytes: l1WriteResult.statSizeBytes,
+    statSha256: l1WriteResult.statSha256,
+    httpOperations,
+  });
+  const { claimsPath } = await writeMaterialClaimsFile({
+    context: params.context,
+    uri: targetUri,
+    sha256: l1WriteResult.actualSha,
+    sizeBytes: l1WriteResult.actualSize,
+    source: "openclaw_runtime_material_save",
+  });
+  return {
+    receiptPath,
+    claimsPath,
+    uri: targetUri,
+    sha256: l1WriteResult.actualSha,
+  };
+}
+
 function parsePmDecision(args: Record<string, unknown>): PmDecisionInput | undefined {
   // PM 决策走结构化参数，不再让模型把 rating/final_conclusion 拼在正文里等 Python 猜。
   if (!Object.prototype.hasOwnProperty.call(args, "pm_decision")) {
@@ -846,18 +901,18 @@ function parsePmDecision(args: Record<string, unknown>): PmDecisionInput | undef
   }
   const raw = args.pm_decision;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("openviking.write_material pm_decision must be an object");
+    throw new Error("openviking_write_material pm_decision must be an object");
   }
   const pm = raw as Record<string, unknown>;
   const sourceClaimIdsRaw = pm.source_claim_ids;
   if (sourceClaimIdsRaw !== undefined && !Array.isArray(sourceClaimIdsRaw)) {
-    throw new Error("openviking.write_material pm_decision.source_claim_ids must be an array");
+    throw new Error("openviking_write_material pm_decision.source_claim_ids must be an array");
   }
   const sourceClaimIds = Array.isArray(sourceClaimIdsRaw)
     ? sourceClaimIdsRaw.map((item) => {
         if (typeof item !== "string") {
           throw new Error(
-            "openviking.write_material pm_decision.source_claim_ids item must be string",
+            "openviking_write_material pm_decision.source_claim_ids item must be string",
           );
         }
         return item;
@@ -866,19 +921,19 @@ function parsePmDecision(args: Record<string, unknown>): PmDecisionInput | undef
   const readPmField = (field: string): string => {
     const value = pm[field];
     if (typeof value !== "string" || value.trim().length === 0) {
-      throw new Error(`openviking.write_material pm_decision.${field} must be non-empty`);
+      throw new Error(`openviking_write_material pm_decision.${field} must be non-empty`);
     }
     return value;
   };
   const readPmStringArrayField = (field: string): string[] => {
     const value = pm[field];
     if (!Array.isArray(value)) {
-      throw new Error(`openviking.write_material pm_decision.${field} must be an array`);
+      throw new Error(`openviking_write_material pm_decision.${field} must be an array`);
     }
     return value.map((item) => {
       if (typeof item !== "string" || item.trim().length === 0) {
         throw new Error(
-          `openviking.write_material pm_decision.${field} item must be non-empty string`,
+          `openviking_write_material pm_decision.${field} item must be non-empty string`,
         );
       }
       return item;
@@ -889,7 +944,7 @@ function parsePmDecision(args: Record<string, unknown>): PmDecisionInput | undef
       const rating = readPmField("rating");
       if (!PM_ALLOWED_RATINGS.includes(rating as (typeof PM_ALLOWED_RATINGS)[number])) {
         throw new Error(
-          `openviking.write_material pm_decision.rating must be one of: ${PM_ALLOWED_RATINGS.join(", ")}`,
+          `openviking_write_material pm_decision.rating must be one of: ${PM_ALLOWED_RATINGS.join(", ")}`,
         );
       }
       return rating;
@@ -912,13 +967,38 @@ function assertPmDecisionScope(context: RuntimeContext): void {
   // 只有 portfolio_manager 的最后阶段能写 PM 决策，其他 worker 即使传了参数也会失败。
   if (!isPmDecisionScope(context)) {
     throw new Error(
-      "openviking.write_material pm_decision is only allowed for portfolio_manager@portfolio_decision",
+      "openviking_write_material pm_decision is only allowed for portfolio_manager@portfolio_decision",
     );
   }
 }
 
 function writeMaterialParametersForContext(context: RuntimeContext) {
   return isPmDecisionScope(context) ? WRITE_MATERIAL_PM_PARAMETERS : WRITE_MATERIAL_BASE_PARAMETERS;
+}
+
+function resolveWriteMaterialTargetUri(
+  context: RuntimeContext,
+  args: Record<string, unknown>,
+): string {
+  const targetUri = context.command.material_target.l1_uri.trim();
+  if (!targetUri) {
+    throw new Error("openviking_write_material command.material_target.l1_uri is required");
+  }
+  const requestedTarget = readOptionalString(args, "uri") ?? readOptionalString(args, "target");
+  if (!requestedTarget || requestedTarget === targetUri) {
+    return targetUri;
+  }
+  const aliasTargets = new Set([
+    "report",
+    "workspace",
+    context.command.material_target.target_name,
+    context.command.worker_id,
+    `${context.command.worker_id}_report`,
+  ]);
+  if (aliasTargets.has(requestedTarget) || !requestedTarget.includes("://")) {
+    return targetUri;
+  }
+  throw new Error("openviking_write_material target must equal command.material_target.l1_uri");
 }
 
 async function writePmDecisionFile(params: {
@@ -966,7 +1046,7 @@ function ensureCapabilityAccess(params: { capability: SingleWorkerReadCapability
   if (prefix && uri.startsWith(prefix)) {
     return { isL1: false };
   }
-  throw new Error("openviking.read_with_capability uri does not match capability scope");
+  throw new Error("openviking_read_with_capability uri does not match capability scope");
 }
 
 function resolveReadRequest(params: { context: RuntimeContext; args: Record<string, unknown> }): {
@@ -977,25 +1057,25 @@ function resolveReadRequest(params: { context: RuntimeContext; args: Record<stri
   // 读路径由 command 里的 approved capability 决定，worker 不需要也不应该手写 URI。
   const materialId = readOptionalString(params.args, "material_id");
   if (!materialId) {
-    throw new Error("openviking.read_with_capability requires material_id");
+    throw new Error("openviking_read_with_capability requires material_id");
   }
   const capabilityId = readOptionalString(params.args, "capability_id");
   const uriArg = readOptionalString(params.args, "uri");
   const layerArg = readOptionalString(params.args, "layer");
   if (layerArg && layerArg !== "L1" && layerArg !== "L2") {
-    throw new Error("openviking.read_with_capability layer must be L1 or L2");
+    throw new Error("openviking_read_with_capability layer must be L1 or L2");
   }
   const candidates = params.context.command.openviking_read_capabilities.filter(
     (item) => item.material_id === materialId,
   );
   if (candidates.length === 0) {
-    throw new Error("openviking.read_with_capability capability not found in command");
+    throw new Error("openviking_read_with_capability capability not found in command");
   }
 
   const resolveSingleCandidate = (): SingleWorkerReadCapability => {
     if (candidates.length !== 1) {
       throw new Error(
-        "openviking.read_with_capability requires capability_id when material_id is ambiguous",
+        "openviking_read_with_capability requires capability_id when material_id is ambiguous",
       );
     }
     return candidates[0];
@@ -1005,7 +1085,7 @@ function resolveReadRequest(params: { context: RuntimeContext; args: Record<stri
   if (capabilityId) {
     const found = candidates.find((item) => item.capability_id === capabilityId);
     if (!found) {
-      throw new Error("openviking.read_with_capability capability not found in command");
+      throw new Error("openviking_read_with_capability capability not found in command");
     }
     capability = found;
   } else {
@@ -1019,11 +1099,11 @@ function resolveReadRequest(params: { context: RuntimeContext; args: Record<stri
         }
       });
       if (inScope.length === 0) {
-        throw new Error("openviking.read_with_capability uri does not match capability scope");
+        throw new Error("openviking_read_with_capability uri does not match capability scope");
       }
       if (inScope.length > 1) {
         throw new Error(
-          "openviking.read_with_capability requires capability_id when material_id+uri is ambiguous",
+          "openviking_read_with_capability requires capability_id when material_id+uri is ambiguous",
         );
       }
       capability = inScope[0];
@@ -1035,16 +1115,16 @@ function resolveReadRequest(params: { context: RuntimeContext; args: Record<stri
   let uri = uriArg;
   if (!uri) {
     if (layerArg === "L2") {
-      throw new Error("openviking.read_with_capability L2 reads require uri");
+      throw new Error("openviking_read_with_capability L2 reads require uri");
     }
     uri = capability.allowed_l1_uri;
   }
   const access = ensureCapabilityAccess({ capability, uri });
   if (layerArg === "L1" && !access.isL1) {
-    throw new Error("openviking.read_with_capability layer=L1 requires L1 uri");
+    throw new Error("openviking_read_with_capability layer=L1 requires L1 uri");
   }
   if (layerArg === "L2" && access.isL1) {
-    throw new Error("openviking.read_with_capability layer=L2 requires L2 uri");
+    throw new Error("openviking_read_with_capability layer=L2 requires L2 uri");
   }
   return {
     capability,
@@ -1061,8 +1141,8 @@ export function registerOpenVikingTools(
   const baseUrl = resolveBaseUrl(options);
 
   const writeTool: AnyAgentTool = {
-    name: "openviking.write_material",
-    label: "openviking.write_material",
+    name: "openviking_write_material",
+    label: "openviking_write_material",
     description: "Write worker material to OpenViking target URI from current command.",
     parameters: writeMaterialParametersForContext(context),
     execute: async (toolCallId, rawArgs) => {
@@ -1071,24 +1151,15 @@ export function registerOpenVikingTools(
       if (pmDecision) {
         assertPmDecisionScope(context);
       }
-      const requestedTarget = readOptionalString(args, "uri") ?? readOptionalString(args, "target");
-      const targetUri = context.command.material_target.l1_uri.trim();
-      if (!requestedTarget) {
-        throw new Error("openviking.write_material requires uri or target");
-      }
-      if (requestedTarget !== targetUri) {
-        throw new Error(
-          "openviking.write_material target must equal command.material_target.l1_uri",
-        );
-      }
+      const targetUri = resolveWriteMaterialTargetUri(context, args);
       const contentRaw = args.content;
       if (typeof contentRaw !== "string" || contentRaw.trim().length === 0) {
-        throw new Error("openviking.write_material content must be non-empty");
+        throw new Error("openviking_write_material content must be non-empty");
       }
       const forbiddenReason = containsForbiddenStructuredBlock(contentRaw);
       if (forbiddenReason) {
         throw new Error(
-          `openviking.write_material content must be worker analysis only: ${forbiddenReason}`,
+          `openviking_write_material content must be worker analysis only: ${forbiddenReason}`,
         );
       }
       const content = contentRaw;
@@ -1127,6 +1198,7 @@ export function registerOpenVikingTools(
         uri: targetUri,
         sha256: l1WriteResult.actualSha,
         sizeBytes: l1WriteResult.actualSize,
+        source: "openclaw_openviking_write_material",
       });
       const pmDecisionPath = pmDecision
         ? await writePmDecisionFile({
@@ -1146,8 +1218,8 @@ export function registerOpenVikingTools(
   };
 
   const readTool: AnyAgentTool = {
-    name: "openviking.read_with_capability",
-    label: "openviking.read_with_capability",
+    name: "openviking_read_with_capability",
+    label: "openviking_read_with_capability",
     description:
       "Read approved material from OpenViking using manifest-scoped capability. Preferred args: material_id + layer.",
     parameters: READ_WITH_CAPABILITY_PARAMETERS,
@@ -1175,13 +1247,13 @@ export function registerOpenVikingTools(
       // capability 指纹校验统一按 content/download 原始字节；content/read 仅返回给 worker 展示文本。
       let sha256 = sha256OfBytes(downloadBytes);
       if (layer === "L1" && sha256 !== capability.allowed_l1_sha256) {
-        throw new Error("openviking.read_with_capability L1 sha256 mismatch");
+        throw new Error("openviking_read_with_capability L1 sha256 mismatch");
       }
       if (layer === "L2") {
         const expectedIndexSha = capability.allowed_l2_index_sha256?.trim() ?? "";
         if (!expectedIndexSha) {
           throw new Error(
-            "openviking.read_with_capability L2 read requires capability.allowed_l2_index_sha256",
+            "openviking_read_with_capability L2 read requires capability.allowed_l2_index_sha256",
           );
         }
         const materialRef = context.command.upstream_materials.find(
@@ -1191,12 +1263,12 @@ export function registerOpenVikingTools(
         );
         const l2IndexUri = materialRef?.l2_index_uri?.trim() ?? "";
         if (!l2IndexUri) {
-          throw new Error("openviking.read_with_capability L2 read missing upstream l2_index_uri");
+          throw new Error("openviking_read_with_capability L2 read missing upstream l2_index_uri");
         }
         const l2Prefix = capability.allowed_l2_prefix?.trim() ?? "";
         if (l2Prefix && !l2IndexUri.startsWith(l2Prefix)) {
           throw new Error(
-            "openviking.read_with_capability L2 index uri is outside capability.allowed_l2_prefix",
+            "openviking_read_with_capability L2 index uri is outside capability.allowed_l2_prefix",
           );
         }
         const l2IndexRaw = await requestOpenViking<unknown>({
@@ -1216,15 +1288,15 @@ export function registerOpenVikingTools(
         const l2IndexContent = normalizeOpenVikingText(normalizeReadContent(l2IndexRaw));
         const l2IndexSha = sha256OfBytes(l2IndexDownloadBytes);
         if (l2IndexSha !== expectedIndexSha) {
-          throw new Error("openviking.read_with_capability L2 index sha256 mismatch");
+          throw new Error("openviking_read_with_capability L2 index sha256 mismatch");
         }
         const l2Entries = parseL2IndexEntries(l2IndexContent);
         const expectedEntry = l2Entries.find((entry) => entry.uri === uri);
         if (!expectedEntry) {
-          throw new Error("openviking.read_with_capability L2 uri not found in index entries");
+          throw new Error("openviking_read_with_capability L2 uri not found in index entries");
         }
         if (expectedEntry.sha256 !== sha256) {
-          throw new Error("openviking.read_with_capability L2 content sha256 mismatch");
+          throw new Error("openviking_read_with_capability L2 content sha256 mismatch");
         }
       }
       return payloadTextResult({

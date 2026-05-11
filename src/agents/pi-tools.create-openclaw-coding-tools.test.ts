@@ -180,6 +180,32 @@ describe("createOpenClawCodingTools", () => {
     );
   });
 
+  it("keeps runtime-allowlisted plugin tools through the final tool policy pipeline", () => {
+    const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
+    createOpenClawToolsMock.mockImplementationOnce(() => [
+      {
+        name: "market_market_data_pack",
+        description: "market pack",
+        parameters: { type: "object", properties: {} },
+        execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+      },
+      {
+        name: "sessions_list",
+        description: "sessions",
+        parameters: { type: "object", properties: {} },
+        execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+      },
+    ]);
+
+    const tools = createOpenClawCodingTools({
+      config: testConfig,
+      includeCoreTools: true,
+      runtimeToolAllowlist: ["market_market_data_pack"],
+    });
+
+    expect(tools.map((tool) => tool.name)).toEqual(["market_market_data_pack"]);
+  });
+
   it("records core tool-prep stages for hot-path diagnostics", () => {
     const stages: string[] = [];
 

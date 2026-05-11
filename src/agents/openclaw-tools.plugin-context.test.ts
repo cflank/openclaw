@@ -54,6 +54,23 @@ describe("openclaw plugin tool context", () => {
     );
   });
 
+  it("forwards trusted single-worker command context", () => {
+    const singleWorkerCommand = {
+      run_id: "trade-run-1",
+      call_id: "frontline-market-1",
+      worker_id: "market_analyst",
+      stage: "frontline",
+    };
+    const result = resolveOpenClawPluginToolInputs({
+      options: {
+        config: {} as never,
+        singleWorkerCommand,
+      },
+    });
+
+    expect(result.context.singleWorkerCommand).toBe(singleWorkerCommand);
+  });
+
   it("infers the default agent workspace when workspaceDir is omitted", () => {
     const workspaceDir = path.join(process.cwd(), "tmp-main-workspace");
     const result = resolveOpenClawPluginToolInputs({

@@ -12,7 +12,12 @@ import {
   resolveProviderPayloadForCapture,
   writeFirstResponseEvidence,
 } from "./attempt.js";
-import { createRuntimeContext, type SingleWorkerCommand, withRuntimeMarkers } from "./params.js";
+import {
+  createRuntimeContext,
+  SINGLE_WORKER_DEFAULT_PROMPT,
+  type SingleWorkerCommand,
+  withRuntimeMarkers,
+} from "./params.js";
 
 const tempDirs: string[] = [];
 
@@ -31,7 +36,7 @@ function makeCommand(evidenceDir: string): SingleWorkerCommand {
     stage: "frontline",
     profile: "CN_A",
     runtime_vars: { ticker: "AAPL" },
-    allowed_tools: ["web_search", "openviking.read_with_capability"],
+    allowed_tools: ["web_search", "openviking_read_with_capability"],
     evidence_dir: evidenceDir,
     upstream_materials: [],
     openviking_read_capabilities: [],
@@ -140,11 +145,11 @@ describe("single-worker evidence helpers", () => {
       openclawRunId: "oc-run-brief",
     });
     const promptWithProfile = prependSingleWorkerProfilePromptToPrompt(
-      "Complete this worker turn using configured workspace instructions.",
+      SINGLE_WORKER_DEFAULT_PROMPT,
       "Ticker=AAPL Company=Apple Currency=USD Date=2026-05-03",
     );
     const promptWithBrief = appendSingleWorkerMaterialBriefToPrompt(promptWithProfile, context);
-    expect(promptWithBrief).toContain("[OpenVikingReadableMaterials]");
+    expect(promptWithBrief).toContain("[ApprovedMaterials]");
     const resolved = await resolveProviderPayloadForCapture({
       payload: { messages: [{ role: "user", content: "old prompt" }] },
       providerModel: { provider: "openai" },
@@ -156,7 +161,7 @@ describe("single-worker evidence helpers", () => {
       (resolved as { messages?: Array<{ content?: string }> }).messages ?? [];
     expect(capturedMessages[0]?.content).toContain("Ticker=AAPL");
     expect(capturedMessages[0]?.content).not.toContain("{ticker}");
-    expect(capturedMessages[0]?.content).toContain("[OpenVikingReadableMaterials]");
+    expect(capturedMessages[0]?.content).toContain("[ApprovedMaterials]");
     expect(capturedMessages[0]?.content).toContain("material_id=mat-1");
     expect(capturedMessages[0]?.content).not.toContain("上游正文");
   });
@@ -169,7 +174,7 @@ describe("single-worker evidence helpers", () => {
     const evidence = buildFirstResponseEvidenceFromEvent({
       event: {
         stream: "tool",
-        data: { phase: "start", toolCallId: "tool-1", name: "openviking.read_with_capability" },
+        data: { phase: "start", toolCallId: "tool-1", name: "openviking_read_with_capability" },
       },
       markers: context.markers,
       capturedAt: "2026-05-04T00:00:00.000Z",
@@ -179,7 +184,7 @@ describe("single-worker evidence helpers", () => {
       event_kind: "tool_call",
       tool_call: {
         tool_call_id: "tool-1",
-        name: "openviking.read_with_capability",
+        name: "openviking_read_with_capability",
       },
     });
   });
@@ -222,7 +227,7 @@ describe("single-worker evidence helpers", () => {
       calls: [
         {
           tool_call_id: "tool-1",
-          tool_name: "openviking.read_with_capability",
+          tool_name: "openviking_read_with_capability",
           action: "read",
           capability_id: "cap-1",
           material_id: "mat-1",
@@ -251,6 +256,6 @@ describe("single-worker evidence helpers", () => {
     expect(payload.openclaw_run_id).toBe("oc-run-3");
     expect(payload.status).toBe("recorded");
     expect(Array.isArray(payload.calls)).toBe(true);
-    expect(payload.calls[0]?.tool_name).toBe("openviking.read_with_capability");
+    expect(payload.calls[0]?.tool_name).toBe("openviking_read_with_capability");
   });
 });

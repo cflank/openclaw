@@ -48,6 +48,25 @@ function installStandaloneRegistry(
   }
 }
 
+function registryContainsToolRegistrationsForPluginIds(
+  registry: PluginRegistry,
+  pluginIds: readonly string[] | undefined,
+): boolean {
+  if (pluginIds === undefined) {
+    return true;
+  }
+  if (pluginIds.length === 0) {
+    return true;
+  }
+  const toolPluginIds = new Set<string>();
+  for (const entry of registry.tools ?? []) {
+    if (entry?.pluginId) {
+      toolPluginIds.add(entry.pluginId);
+    }
+  }
+  return pluginIds.every((pluginId) => toolPluginIds.has(pluginId));
+}
+
 export function ensureStandaloneRuntimePluginRegistryLoaded(params: {
   loadOptions: PluginLoadOptions;
   requiredPluginIds?: readonly string[];
@@ -62,7 +81,11 @@ export function ensureStandaloneRuntimePluginRegistryLoaded(params: {
     requiredPluginIds,
     surface,
   });
-  if (existing) {
+  if (
+    existing &&
+    (params.loadOptions.toolDiscovery !== true ||
+      registryContainsToolRegistrationsForPluginIds(existing, requiredPluginIds))
+  ) {
     return existing;
   }
 

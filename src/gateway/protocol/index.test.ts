@@ -195,7 +195,7 @@ describe("validateAgentRunSingleWorkerParams", () => {
             ticker: "AAPL",
             company_name: "Apple",
           },
-          allowed_tools: ["market_data", "openviking.write_material"],
+          allowed_tools: ["market_data", "openviking_write_material"],
           upstream_materials: [],
           openviking_read_capabilities: [],
           material_target: {

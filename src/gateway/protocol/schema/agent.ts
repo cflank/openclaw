@@ -273,6 +273,9 @@ export const SingleWorkerCommandSchema = Type.Object(
     read_policy: SingleWorkerReadPolicySchema,
     evidence_dir: NonEmptyString,
     stop_after_first_response: Type.Boolean(),
+    system_context_policy: Type.Optional(
+      Type.Union([Type.Literal("openclaw_default"), Type.Literal("single_worker_minimal")]),
+    ),
   },
   { additionalProperties: false },
 );

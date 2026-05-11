@@ -74,7 +74,7 @@ describe("createMinimaxThinkingDisabledWrapper", () => {
     ).toBeUndefined();
   });
 
-  it("preserves an already-set thinking value", () => {
+  it("overrides an already-set thinking value to disabled", () => {
     let capturedThinking: unknown = undefined;
     const baseStreamFn: StreamFn = (_model, _context, options) => {
       const payload: Record<string, unknown> = {
@@ -96,7 +96,7 @@ describe("createMinimaxThinkingDisabledWrapper", () => {
       {},
     );
 
-    expect(capturedThinking).toEqual({ type: "enabled", budget_tokens: 1024 });
+    expect(capturedThinking).toEqual({ type: "disabled" });
   });
 });
 

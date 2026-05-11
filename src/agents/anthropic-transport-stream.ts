@@ -108,6 +108,171 @@ type MutableAssistantOutput = {
   errorMessage?: string;
 };
 
+type MinimaxXmlToolCall = {
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+function isMinimaxAnthropicCompatibleProvider(provider: string): boolean {
+  return provider === "minimax" || provider === "minimax-portal";
+}
+
+function decodeBasicXmlEntities(text: string): string {
+  return text
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&amp;", "&");
+}
+
+function stripCdataWrapper(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("<![CDATA[") && trimmed.endsWith("]]>")) {
+    return trimmed.slice("<![CDATA[".length, -"]]>".length);
+  }
+  return text;
+}
+
+function readXmlAttribute(attrs: string, attributeName: string): string | undefined {
+  const re = new RegExp(`${attributeName}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i");
+  const match = re.exec(attrs);
+  return match?.[1] ?? match?.[2];
+}
+
+function parseMinimaxXmlToolCall(text: string): MinimaxXmlToolCall | null {
+  if (!text || !/minimax:tool_call/i.test(text) || !/<invoke\b/i.test(text)) {
+    return null;
+  }
+
+  const withoutWrapper = text.replaceAll(/<\/?\s*minimax:tool_call\b[^>]*>/gi, "").trim();
+  const invokeMatch = /^<invoke\b([^>]*)>([\s\S]*?)<\/invoke>$/i.exec(withoutWrapper);
+  if (!invokeMatch) {
+    return null;
+  }
+
+  const name = readXmlAttribute(invokeMatch[1] ?? "", "name")?.trim();
+  if (!name) {
+    return null;
+  }
+
+  const body = invokeMatch[2] ?? "";
+  const parameters: Record<string, unknown> = {};
+  const parameterRe = /<parameter\b([^>]*)>([\s\S]*?)<\/parameter>/gi;
+  for (const match of body.matchAll(parameterRe)) {
+    const key = readXmlAttribute(match[1] ?? "", "name")?.trim();
+    if (!key) {
+      continue;
+    }
+    const rawValue = stripCdataWrapper(match[2] ?? "");
+    parameters[key] = decodeBasicXmlEntities(rawValue.trim());
+  }
+  if (Object.keys(parameters).length > 0) {
+    return { name, arguments: parameters };
+  }
+
+  const argumentsMatch = /<arguments?\b[^>]*>([\s\S]*?)<\/arguments?>/i.exec(body);
+  if (argumentsMatch) {
+    const rawArguments = decodeBasicXmlEntities(stripCdataWrapper(argumentsMatch[1] ?? "").trim());
+    if (rawArguments) {
+      try {
+        const parsed = JSON.parse(rawArguments) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return { name, arguments: parsed as Record<string, unknown> };
+        }
+      } catch {
+        // Keep runtime behavior strict: malformed argument payload stays empty.
+      }
+    }
+  }
+
+  return { name, arguments: {} };
+}
+
+function createRecoveredMinimaxToolCallId(params: {
+  responseId?: string;
+  contentIndex: number;
+  toolName: string;
+}): string {
+  const responseSuffix = params.responseId?.trim() || "msg";
+  const toolSuffix = params.toolName.trim() || "tool";
+  return normalizeToolCallId(`minimax_xml_${responseSuffix}_${params.contentIndex}_${toolSuffix}`);
+}
+
+function readForcedToolChoiceNameFromPayload(params: Record<string, unknown>): string | undefined {
+  const toolChoice = params.tool_choice;
+  if (!toolChoice || typeof toolChoice !== "object" || Array.isArray(toolChoice)) {
+    return undefined;
+  }
+  const typeValue = (toolChoice as Record<string, unknown>).type;
+  const nameValue = (toolChoice as Record<string, unknown>).name;
+  if (typeValue !== "tool" || typeof nameValue !== "string") {
+    return undefined;
+  }
+  const trimmedName = nameValue.trim();
+  return trimmedName.length > 0 ? trimmedName : undefined;
+}
+
+function isSingleStringContentToolSchema(tool: unknown): boolean {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+    return false;
+  }
+  const inputSchema = (tool as Record<string, unknown>).input_schema;
+  if (!inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) {
+    return false;
+  }
+  const schema = inputSchema as Record<string, unknown>;
+  if (schema.type !== "object") {
+    return false;
+  }
+  const properties = schema.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+    return false;
+  }
+  const propertyKeys = Object.keys(properties as Record<string, unknown>);
+  if (propertyKeys.length !== 1 || propertyKeys[0] !== "content") {
+    return false;
+  }
+  const contentSchema = (properties as Record<string, unknown>).content;
+  if (!contentSchema || typeof contentSchema !== "object" || Array.isArray(contentSchema)) {
+    return false;
+  }
+  if ((contentSchema as Record<string, unknown>).type !== "string") {
+    return false;
+  }
+  const required = schema.required;
+  if (required === undefined) {
+    return true;
+  }
+  if (!Array.isArray(required)) {
+    return false;
+  }
+  return (
+    required.length === 0 ||
+    (required.length === 1 && typeof required[0] === "string" && required[0] === "content")
+  );
+}
+
+function resolveForcedSingleStringContentToolNameFromPayload(
+  params: Record<string, unknown>,
+): string | undefined {
+  const forcedToolName = readForcedToolChoiceNameFromPayload(params);
+  if (!forcedToolName) {
+    return undefined;
+  }
+  const tools = Array.isArray(params.tools) ? params.tools : [];
+  const forcedTool = tools.find((tool) => {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+      return false;
+    }
+    return (tool as Record<string, unknown>).name === forcedToolName;
+  });
+  if (!forcedTool || !isSingleStringContentToolSchema(forcedTool)) {
+    return undefined;
+  }
+  return forcedToolName;
+}
+
 function isClaudeOpus47Model(modelId: string): boolean {
   return modelId.includes("opus-4-7") || modelId.includes("opus-4.7");
 }
@@ -788,6 +953,10 @@ function buildAnthropicParams(
       params.thinking = { type: "disabled" };
     }
   }
+  if (isMinimaxAnthropicCompatibleProvider(model.provider)) {
+    params.thinking = { type: "disabled" };
+    delete params.output_config;
+  }
   if (options?.metadata && typeof options.metadata.user_id === "string") {
     params.metadata = { user_id: options.metadata.user_id };
   }
@@ -887,12 +1056,119 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
         if (nextParams !== undefined) {
           params = nextParams as Record<string, unknown>;
         }
+        const forcedSingleStringContentToolName = isMinimaxAnthropicCompatibleProvider(
+          model.provider,
+        )
+          ? resolveForcedSingleStringContentToolNameFromPayload(params)
+          : undefined;
         const anthropicStream = client.messages.stream(
           { ...params, stream: true },
           transportOptions.signal ? { signal: transportOptions.signal } : undefined,
         );
         stream.push({ type: "start", partial: output as never });
         const blocks = output.content;
+        let recoveredMinimaxTextToolCall = false;
+        const closeContentBlock = (index: number): void => {
+          const block = blocks[index];
+          if (!block) {
+            return;
+          }
+          delete block.index;
+          if (block.type === "text") {
+            const recoveredToolCall = isMinimaxAnthropicCompatibleProvider(model.provider)
+              ? parseMinimaxXmlToolCall(block.text)
+              : null;
+            if (recoveredToolCall) {
+              const toolCallBlock: TransportContentBlock = {
+                type: "toolCall",
+                id: createRecoveredMinimaxToolCallId({
+                  responseId: output.responseId,
+                  contentIndex: index,
+                  toolName: recoveredToolCall.name,
+                }),
+                name: recoveredToolCall.name,
+                arguments: recoveredToolCall.arguments,
+              };
+              output.content[index] = toolCallBlock;
+              recoveredMinimaxTextToolCall = true;
+              stream.push({
+                type: "toolcall_start",
+                contentIndex: index,
+                partial: output as never,
+              });
+              stream.push({
+                type: "toolcall_end",
+                contentIndex: index,
+                toolCall: toolCallBlock as never,
+                partial: output as never,
+              });
+              return;
+            }
+            const shouldRecoverForcedTextAsToolCall =
+              typeof forcedSingleStringContentToolName === "string" &&
+              block.text.trim().length > 0 &&
+              !output.content.some(
+                (existingBlock, existingIndex) =>
+                  existingIndex !== index &&
+                  existingBlock.type === "toolCall" &&
+                  existingBlock.name === forcedSingleStringContentToolName,
+              );
+            if (shouldRecoverForcedTextAsToolCall) {
+              const toolCallBlock: TransportContentBlock = {
+                type: "toolCall",
+                id: createRecoveredMinimaxToolCallId({
+                  responseId: output.responseId,
+                  contentIndex: index,
+                  toolName: forcedSingleStringContentToolName,
+                }),
+                name: forcedSingleStringContentToolName,
+                arguments: { content: block.text },
+              };
+              output.content[index] = toolCallBlock;
+              recoveredMinimaxTextToolCall = true;
+              stream.push({
+                type: "toolcall_start",
+                contentIndex: index,
+                partial: output as never,
+              });
+              stream.push({
+                type: "toolcall_end",
+                contentIndex: index,
+                toolCall: toolCallBlock as never,
+                partial: output as never,
+              });
+              return;
+            }
+            stream.push({
+              type: "text_end",
+              contentIndex: index,
+              content: block.text,
+              partial: output as never,
+            });
+            return;
+          }
+          if (block.type === "thinking") {
+            stream.push({
+              type: "thinking_end",
+              contentIndex: index,
+              content: block.thinking,
+              partial: output as never,
+            });
+            return;
+          }
+          if (block.type === "toolCall") {
+            if (typeof block.partialJson === "string" && block.partialJson.length > 0) {
+              block.arguments = parseStreamingJson(block.partialJson);
+            }
+            delete block.partialJson;
+            stream.push({
+              type: "toolcall_end",
+              contentIndex: index,
+              toolCall: block as never,
+              partial: output as never,
+            });
+          }
+        };
         for await (const event of anthropicStream) {
           if (event.type === "error") {
             const error = event.error as { message?: string } | undefined;
@@ -1086,41 +1362,10 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
           }
           if (event.type === "content_block_stop") {
             const index = blocks.findIndex((block) => block.index === event.index);
-            const block = blocks[index];
-            if (!block) {
+            if (index < 0) {
               continue;
             }
-            delete block.index;
-            if (block.type === "text") {
-              stream.push({
-                type: "text_end",
-                contentIndex: index,
-                content: block.text,
-                partial: output as never,
-              });
-              continue;
-            }
-            if (block.type === "thinking") {
-              stream.push({
-                type: "thinking_end",
-                contentIndex: index,
-                content: block.thinking,
-                partial: output as never,
-              });
-              continue;
-            }
-            if (block.type === "toolCall") {
-              if (typeof block.partialJson === "string" && block.partialJson.length > 0) {
-                block.arguments = parseStreamingJson(block.partialJson);
-              }
-              delete block.partialJson;
-              stream.push({
-                type: "toolcall_end",
-                contentIndex: index,
-                toolCall: block as never,
-                partial: output as never,
-              });
-            }
+            closeContentBlock(index);
             continue;
           }
           if (event.type === "message_delta") {
@@ -1128,6 +1373,9 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
             const usage = event.usage as Record<string, unknown> | undefined;
             if (delta?.stop_reason) {
               output.stopReason = mapStopReason(delta.stop_reason);
+              if (recoveredMinimaxTextToolCall && output.stopReason === "stop") {
+                output.stopReason = "toolUse";
+              }
             }
             if (typeof usage?.input_tokens === "number") {
               output.usage.input = usage.input_tokens;
@@ -1148,6 +1396,14 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
               output.usage.cacheWrite;
             calculateCost(model, output.usage);
           }
+        }
+        for (let index = 0; index < blocks.length; index += 1) {
+          if (typeof blocks[index]?.index === "number") {
+            closeContentBlock(index);
+          }
+        }
+        if (recoveredMinimaxTextToolCall && output.stopReason === "stop") {
+          output.stopReason = "toolUse";
         }
         finalizeTransportStream({ stream, output, signal: transportOptions.signal });
       } catch (error) {

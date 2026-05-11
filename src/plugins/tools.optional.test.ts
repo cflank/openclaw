@@ -491,6 +491,51 @@ describe("resolvePluginTools optional tools", () => {
     );
   });
 
+  it("reloads tool discovery when a pinned registry has plugin ids but no tool registrations", () => {
+    const config = createContext().config;
+    const startupRegistry = {
+      plugins: [{ id: "optional-demo", status: "loaded" }],
+      tools: [],
+      diagnostics: [],
+    };
+    setActivePluginRegistry?.(startupRegistry as never, "startup-registry", "default", "/tmp");
+    pinActivePluginChannelRegistry?.(startupRegistry as never);
+    const toolRegistry = createToolRegistry([createOptionalDemoEntry()]);
+    loadOpenClawPluginsMock.mockReturnValue(toolRegistry);
+    installToolManifestSnapshot({
+      config,
+      plugin: {
+        id: "optional-demo",
+        origin: "bundled",
+        enabledByDefault: true,
+        channels: [],
+        providers: [],
+        contracts: {
+          tools: ["optional_tool"],
+        },
+      },
+    });
+
+    ensureStandalonePluginToolRegistryLoaded({
+      context: createContext() as never,
+      toolAllowlist: ["optional_tool"],
+    });
+    const tools = resolvePluginTools(
+      createResolveToolsParams({
+        toolAllowlist: ["optional_tool"],
+      }),
+    );
+
+    expectResolvedToolNames(tools, ["optional_tool"]);
+    expect(loadOpenClawPluginsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activate: false,
+        onlyPluginIds: ["optional-demo"],
+        toolDiscovery: true,
+      }),
+    );
+  });
+
   it("does not reuse a pinned gateway registry for manifest-unavailable tools", () => {
     const config = createContext().config;
     installToolManifestSnapshot({

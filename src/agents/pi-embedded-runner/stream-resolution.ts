@@ -41,7 +41,11 @@ export function describeEmbeddedAgentStreamStrategy(params: {
   if (params.model.provider === "anthropic-vertex") {
     return "anthropic-vertex";
   }
-  if (params.currentStreamFn === undefined || params.currentStreamFn === streamSimple) {
+  if (
+    params.currentStreamFn === undefined ||
+    params.currentStreamFn === streamSimple ||
+    shouldPreferBoundaryAwareAnthropicTransport(params.model)
+  ) {
     return createBoundaryAwareStreamFnForModel(params.model)
       ? `boundary-aware:${params.model.api}`
       : "stream-simple";
@@ -104,7 +108,11 @@ export function resolveEmbeddedAgentStreamFn(params: {
     return createAnthropicVertexStreamFnForModel(params.model);
   }
 
-  if (params.currentStreamFn === undefined || params.currentStreamFn === streamSimple) {
+  if (
+    params.currentStreamFn === undefined ||
+    params.currentStreamFn === streamSimple ||
+    shouldPreferBoundaryAwareAnthropicTransport(params.model)
+  ) {
     const boundaryAwareStreamFn = createBoundaryAwareStreamFnForModel(params.model);
     if (boundaryAwareStreamFn) {
       // Boundary-aware transports read credentials from options.apiKey just
@@ -122,6 +130,15 @@ export function resolveEmbeddedAgentStreamFn(params: {
   }
 
   return currentStreamFn;
+}
+
+function shouldPreferBoundaryAwareAnthropicTransport(
+  model: EmbeddedRunAttemptParams["model"],
+): boolean {
+  return (
+    model.api === "anthropic-messages" &&
+    (model.provider === "minimax" || model.provider === "minimax-portal")
+  );
 }
 
 function wrapEmbeddedAgentStreamFn(

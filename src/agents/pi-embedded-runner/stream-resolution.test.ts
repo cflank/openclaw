@@ -84,6 +84,20 @@ describe("describeEmbeddedAgentStreamStrategy", () => {
       }),
     ).toBe("session-custom");
   });
+
+  it("labels minimax anthropic custom streams as boundary-aware", () => {
+    expect(
+      describeEmbeddedAgentStreamStrategy({
+        currentStreamFn: vi.fn() as never,
+        shouldUseWebSocketTransport: false,
+        model: {
+          api: "anthropic-messages",
+          provider: "minimax-portal",
+          id: "MiniMax-M1-80k",
+        } as never,
+      }),
+    ).toBe("boundary-aware:anthropic-messages");
+  });
 });
 
 describe("resolveEmbeddedAgentStreamFn", () => {
@@ -357,5 +371,28 @@ describe("resolveEmbeddedAgentStreamFn", () => {
     await expect(
       streamFn({ provider: "openai-codex", id: "gpt-5.5" } as never, { systemPrompt } as never, {}),
     ).resolves.toMatchObject({ systemPrompt });
+  });
+
+  it("prefers the boundary-aware anthropic transport for minimax custom session streams", async () => {
+    const customSessionStream = vi.fn(async () => "session-custom");
+    const boundaryAwareStream = vi.fn(async () => "boundary-aware");
+    overrideBoundaryAwareStreamFnOnce(boundaryAwareStream as never);
+    const streamFn = resolveEmbeddedAgentStreamFn({
+      currentStreamFn: customSessionStream as never,
+      shouldUseWebSocketTransport: false,
+      sessionId: "session-1",
+      model: {
+        api: "anthropic-messages",
+        provider: "minimax",
+        id: "MiniMax-M1-80k",
+      } as never,
+      resolvedApiKey: "minimax-key",
+    });
+
+    await expect(
+      streamFn({ provider: "minimax", id: "MiniMax-M1-80k" } as never, {} as never, {}),
+    ).resolves.toBe("boundary-aware");
+    expect(boundaryAwareStream).toHaveBeenCalledTimes(1);
+    expect(customSessionStream).not.toHaveBeenCalled();
   });
 });

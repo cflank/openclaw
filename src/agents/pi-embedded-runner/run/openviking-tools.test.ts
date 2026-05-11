@@ -144,7 +144,7 @@ function buildCommand(params: {
     runtime_vars: {
       ticker: "AAPL",
     },
-    allowed_tools: ["openviking.write_material", "openviking.read_with_capability"],
+    allowed_tools: ["openviking_write_material", "openviking_read_with_capability"],
     evidence_dir: params.evidenceDir,
     upstream_materials: params.upstreamMaterials ?? [],
     openviking_read_capabilities: params.capabilities ?? [],
@@ -221,7 +221,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-write-${stamp}`,
     });
     const writeTools = registerOpenVikingTools(writeContext, { baseUrl: OPENVIKING_BASE_URL });
-    const writeTool = writeTools.find((item) => item.name === "openviking.write_material");
+    const writeTool = writeTools.find((item) => item.name === "openviking_write_material");
     expect(writeTool).toBeDefined();
 
     const writeResult = await writeTool!.execute("call-write-1", {
@@ -331,7 +331,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-read-${stamp}`,
     });
     const readTools = registerOpenVikingTools(readContext, { baseUrl: OPENVIKING_BASE_URL });
-    const readTool = readTools.find((item) => item.name === "openviking.read_with_capability");
+    const readTool = readTools.find((item) => item.name === "openviking_read_with_capability");
     expect(readTool).toBeDefined();
 
     const readResult = await readTool!.execute("call-read-1", {
@@ -372,7 +372,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-deny-${stamp}`,
     });
     const readTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.read_with_capability",
+      (item) => item.name === "openviking_read_with_capability",
     );
     expect(readTool).toBeDefined();
 
@@ -414,7 +414,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-read-uri-${stamp}`,
     });
     const readTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.read_with_capability",
+      (item) => item.name === "openviking_read_with_capability",
     );
     expect(readTool).toBeDefined();
     const result = await readTool!.execute("call-read-uri", {
@@ -443,7 +443,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-reject-claims-marker-${stamp}`,
     });
     const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.write_material",
+      (item) => item.name === "openviking_write_material",
     );
     expect(writeTool).toBeDefined();
     await expect(
@@ -473,7 +473,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-pm-decision-${stamp}`,
     });
     const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.write_material",
+      (item) => item.name === "openviking_write_material",
     );
     expect(writeTool).toBeDefined();
     const result = await writeTool!.execute("call-write-pm", {
@@ -545,7 +545,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-pm-decision-reject-${stamp}`,
     });
     const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.write_material",
+      (item) => item.name === "openviking_write_material",
     );
     expect(writeTool).toBeDefined();
     await expect(
@@ -580,7 +580,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-pm-rating-reject-${stamp}`,
     });
     const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.write_material",
+      (item) => item.name === "openviking_write_material",
     );
     expect(writeTool).toBeDefined();
     await expect(
@@ -659,7 +659,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-l2-${stamp}`,
     });
     const readTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.read_with_capability",
+      (item) => item.name === "openviking_read_with_capability",
     );
     expect(readTool).toBeDefined();
 
@@ -721,7 +721,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-l2-sha-${stamp}`,
     });
     const readTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.read_with_capability",
+      (item) => item.name === "openviking_read_with_capability",
     );
     expect(readTool).toBeDefined();
 
@@ -782,7 +782,7 @@ describe("openviking tools integration", () => {
       openclawRunId: `openclaw-l2-entry-${stamp}`,
     });
     const readTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.read_with_capability",
+      (item) => item.name === "openviking_read_with_capability",
     );
     expect(readTool).toBeDefined();
 
@@ -822,7 +822,7 @@ describe("openviking tools canonical download bytes", () => {
       openclawRunId: `openclaw-canonical-write-${stamp}`,
     });
     const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.write_material",
+      (item) => item.name === "openviking_write_material",
     );
     expect(writeTool).toBeDefined();
 
@@ -1019,7 +1019,7 @@ describe("openviking tools canonical download bytes", () => {
       openclawRunId: `openclaw-canonical-read-${stamp}`,
     });
     const readTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking.read_with_capability",
+      (item) => item.name === "openviking_read_with_capability",
     );
     expect(readTool).toBeDefined();
 

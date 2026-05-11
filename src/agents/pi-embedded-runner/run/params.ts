@@ -65,6 +65,8 @@ export type SingleWorkerReadPolicy = {
   forbid_compact_as_writing_source: boolean;
 };
 
+export type SingleWorkerSystemContextPolicy = "openclaw_default" | "single_worker_minimal";
+
 export type SingleWorkerCommand = {
   // claw-trade 发来的单 worker 命令；OpenClaw 只按它运行一轮，不拥有整条交易工作流。
   agent: string;
@@ -81,11 +83,16 @@ export type SingleWorkerCommand = {
   material_target: SingleWorkerMaterialTarget;
   read_policy: SingleWorkerReadPolicy;
   stop_after_first_response: boolean;
+  system_context_policy?: SingleWorkerSystemContextPolicy;
 };
 
-const OPENVIKING_MATERIAL_BRIEF_HEADER = "[OpenVikingReadableMaterials]";
-const OPENVIKING_WRITE_TARGET_HEADER = "[OpenVikingWriteTarget]";
-const RUNTIME_TARGET_HEADER = "[RuntimeTarget]";
+const APPROVED_MATERIALS_HEADER = "[ApprovedMaterials]";
+const LEGACY_SINGLE_WORKER_RUNTIME_SECTION_HEADERS = new Set([
+  "[RuntimeTarget]",
+  "[ReportSubmission]",
+  "[OpenVikingReadableMaterials]",
+  "[OpenVikingWriteTarget]",
+]);
 const RUNTIME_PLACEHOLDER_PATTERN = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 
 export type RuntimeMarkers = {
@@ -102,6 +109,22 @@ export type RuntimeContext = {
   evidenceDir: string;
   markers: RuntimeMarkers;
 };
+
+export const SINGLE_WORKER_DEFAULT_PROMPT = "请按当前 worker 的配置完成本轮任务。";
+
+export function isSingleWorkerDefaultPrompt(prompt: string): boolean {
+  return prompt.trim() === SINGLE_WORKER_DEFAULT_PROMPT;
+}
+
+export function resolveSingleWorkerSystemContextPolicy(
+  command: SingleWorkerCommand | undefined,
+): SingleWorkerSystemContextPolicy {
+  const value = command?.system_context_policy;
+  if (value === "single_worker_minimal") {
+    return value;
+  }
+  return "openclaw_default";
+}
 
 export type WorkspaceEvidence = {
   source: "openclaw_workspace_loader";
@@ -549,7 +572,7 @@ function formatOpenVikingMaterialLine(ref: SingleWorkerMaterialReadRef): string 
 }
 
 export function renderOpenVikingMaterialBrief(command: SingleWorkerCommand): string {
-  const lines: string[] = [OPENVIKING_MATERIAL_BRIEF_HEADER];
+  const lines: string[] = [APPROVED_MATERIALS_HEADER];
   if (command.upstream_materials.length === 0) {
     lines.push("- none");
   } else {
@@ -560,48 +583,19 @@ export function renderOpenVikingMaterialBrief(command: SingleWorkerCommand): str
   return lines.join("\n");
 }
 
-export function renderOpenVikingWriteTargetBrief(command: SingleWorkerCommand): string {
-  return [
-    OPENVIKING_WRITE_TARGET_HEADER,
-    `- run_id=${command.material_target.run_id}`,
-    `- target_name=${command.material_target.target_name}`,
-    `- uri=${command.material_target.l1_uri}`,
-    `- worker_id=${command.material_target.worker_id}`,
-    `- stage=${command.material_target.stage}`,
-    `- call_id=${command.material_target.call_id}`,
-  ].join("\n");
-}
-
-function readRuntimeVar(command: SingleWorkerCommand, key: string): string {
-  const raw = command.runtime_vars[key];
-  return typeof raw === "string" ? raw : "";
-}
-
-export function renderRuntimeTargetBrief(command: SingleWorkerCommand): string {
-  return [
-    RUNTIME_TARGET_HEADER,
-    `- ticker=${readRuntimeVar(command, "ticker")}`,
-    `- company_name=${readRuntimeVar(command, "company_name")}`,
-    `- market=${readRuntimeVar(command, "market")}`,
-    `- currency=${readRuntimeVar(command, "currency")}`,
-    `- currency_symbol=${readRuntimeVar(command, "currency_symbol")}`,
-    `- current_date=${readRuntimeVar(command, "current_date")}`,
-    `- start_date=${readRuntimeVar(command, "start_date")}`,
-    `- end_date=${readRuntimeVar(command, "end_date")}`,
-  ].join("\n");
-}
-
 export function appendOpenVikingMaterialBrief(
   prompt: string,
   command: SingleWorkerCommand,
 ): string {
-  // 追加给模型的是材料目录和写入目标，不是上游全文，避免 Python prompt stuffing。
+  // 只在确有上游材料时追加材料目录；运行目标和提交要求由 profile prompt 自己表达。
   const base = stripRuntimeSections(prompt.trimEnd());
-  const appendSections: string[] = [
-    renderRuntimeTargetBrief(command),
-    renderOpenVikingMaterialBrief(command),
-    renderOpenVikingWriteTargetBrief(command),
-  ];
+  const appendSections: string[] = [];
+  if (command.upstream_materials.length > 0) {
+    appendSections.push(renderOpenVikingMaterialBrief(command));
+  }
+  if (appendSections.length === 0) {
+    return base;
+  }
   if (!base) {
     return appendSections.join("\n\n");
   }
@@ -610,9 +604,8 @@ export function appendOpenVikingMaterialBrief(
 
 function stripRuntimeSections(text: string): string {
   const headers = new Set([
-    RUNTIME_TARGET_HEADER,
-    OPENVIKING_MATERIAL_BRIEF_HEADER,
-    OPENVIKING_WRITE_TARGET_HEADER,
+    APPROVED_MATERIALS_HEADER,
+    ...LEGACY_SINGLE_WORKER_RUNTIME_SECTION_HEADERS,
   ]);
   const lines = text.split(/\r?\n/g);
   const kept: string[] = [];

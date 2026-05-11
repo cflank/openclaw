@@ -38,7 +38,7 @@ function buildCommand(params: {
     stage: "frontline",
     profile: "CN_A",
     runtime_vars: { ticker: "AAPL" },
-    allowed_tools: ["openviking.write_material"],
+    allowed_tools: ["openviking_write_material"],
     evidence_dir: params.evidenceDir,
     upstream_materials: [],
     openviking_read_capabilities: [],
@@ -218,11 +218,10 @@ describe("openviking write import-path compat", () => {
     try {
       const context = createRuntimeContext({ command, openclawRunId: "oc-import-nostat" });
       const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
-        (item) => item.name === "openviking.write_material",
+        (item) => item.name === "openviking_write_material",
       );
       expect(writeTool).toBeDefined();
       const result = await writeTool!.execute("tool-call-import", {
-        uri: targetUri,
         content: "hello",
       });
       const details = readDetailsRecord(result);
@@ -247,6 +246,26 @@ describe("openviking write import-path compat", () => {
     } finally {
       cleanupFetch();
     }
+  });
+
+  it("rejects explicit foreign OpenViking URI targets", async () => {
+    const evidenceDir = await makeTempDir("openviking-foreign-target-");
+    const targetUri =
+      "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1/report.md";
+    const l2Prefix =
+      "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1/evidence/";
+    const command = buildCommand({ evidenceDir, targetUri, l2Prefix });
+    const context = createRuntimeContext({ command, openclawRunId: "oc-foreign-target" });
+    const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
+      (item) => item.name === "openviking_write_material",
+    );
+    expect(writeTool).toBeDefined();
+    await expect(
+      writeTool!.execute("tool-call-foreign", {
+        uri: "viking://resources/workflow/other/frontline/market_analyst/call-1/report.md",
+        content: "hello",
+      }),
+    ).rejects.toThrowError(/target must equal/i);
   });
 
   it("uses content/download bytes for receipt sha256/size when read drops trailing newline", async () => {
@@ -351,7 +370,7 @@ describe("openviking write import-path compat", () => {
     try {
       const context = createRuntimeContext({ command, openclawRunId: "oc-import-download-sha" });
       const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
-        (item) => item.name === "openviking.write_material",
+        (item) => item.name === "openviking_write_material",
       );
       expect(writeTool).toBeDefined();
       const result = await writeTool!.execute("tool-call-import-download-sha", {
@@ -484,7 +503,7 @@ describe("openviking write import-path compat", () => {
     try {
       const context = createRuntimeContext({ command, openclawRunId: "oc-import-retry-fetch" });
       const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
-        (item) => item.name === "openviking.write_material",
+        (item) => item.name === "openviking_write_material",
       );
       expect(writeTool).toBeDefined();
       const result = await writeTool!.execute("tool-call-retry-fetch", {
@@ -610,7 +629,7 @@ describe("openviking write import-path compat", () => {
     try {
       const context = createRuntimeContext({ command, openclawRunId: "oc-import-retry-epipe" });
       const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
-        (item) => item.name === "openviking.write_material",
+        (item) => item.name === "openviking_write_material",
       );
       expect(writeTool).toBeDefined();
       const result = await writeTool!.execute("tool-call-retry-epipe", {
@@ -655,7 +674,7 @@ describe("openviking write import-path compat", () => {
     try {
       const context = createRuntimeContext({ command, openclawRunId: "oc-import-no-retry-4xx" });
       const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
-        (item) => item.name === "openviking.write_material",
+        (item) => item.name === "openviking_write_material",
       );
       expect(writeTool).toBeDefined();
       await expect(
@@ -675,7 +694,7 @@ describe("openviking write import-path compat", () => {
     const command = buildCommand({ evidenceDir, targetUri, l2Prefix });
     const context = createRuntimeContext({ command, openclawRunId: "oc-import-pm-decision-scope" });
     const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
-      (item) => item.name === "openviking.write_material",
+      (item) => item.name === "openviking_write_material",
     );
     expect(writeTool).toBeDefined();
     await expect(

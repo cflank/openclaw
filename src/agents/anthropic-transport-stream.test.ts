@@ -592,6 +592,652 @@ describe("anthropic transport stream", () => {
     );
   });
 
+  it("converts MiniMax XML tool-call text blocks into executable tool calls", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 12, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "text",
+            text: '<minimax:tool_call><invoke name="openviking_write_material"><parameter name="content">报告正文</parameter></invoke></minimax:tool_call>',
+          },
+        },
+        {
+          type: "content_block_stop",
+          index: 0,
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 12, output_tokens: 4 },
+        },
+      ]),
+    );
+
+    const streamFn = createAnthropicMessagesTransportStreamFn();
+    const stream = await Promise.resolve(
+      streamFn(
+        makeAnthropicTransportModel({
+          provider: "minimax",
+          baseUrl: "https://api.minimax.chat",
+        }),
+        {
+          messages: [{ role: "user", content: "请提交报告" }],
+        } as AnthropicStreamContext,
+        {
+          apiKey: "sk-minimax",
+        } as AnthropicStreamOptions,
+      ),
+    );
+
+    const events: Array<{ type?: string; content?: string; toolCall?: { name?: string } }> = [];
+    for await (const event of stream as AsyncIterable<{
+      type?: string;
+      content?: string;
+      toolCall?: { name?: string };
+    }>) {
+      events.push(event);
+    }
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("toolUse");
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "toolCall",
+          name: "openviking_write_material",
+          arguments: { content: "报告正文" },
+        }),
+      ]),
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "toolcall_start" }),
+        expect.objectContaining({
+          type: "toolcall_end",
+          toolCall: expect.objectContaining({ name: "openviking_write_material" }),
+        }),
+      ]),
+    );
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "text_end", content: expect.any(String) }),
+      ]),
+    );
+  });
+
+  it("does not convert MiniMax inline XML examples mixed with normal prose", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 7, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "text",
+            text: '示例：<minimax:tool_call><invoke name="openviking_write_material"><parameter name="content">x</parameter></invoke></minimax:tool_call>',
+          },
+        },
+        {
+          type: "content_block_stop",
+          index: 0,
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 7, output_tokens: 6 },
+        },
+      ]),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel({
+        provider: "minimax",
+        baseUrl: "https://api.minimax.chat",
+      }),
+      {
+        messages: [{ role: "user", content: "给我展示格式" }],
+      } as AnthropicStreamContext,
+      {
+        apiKey: "sk-minimax",
+      } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: '示例：<minimax:tool_call><invoke name="openviking_write_material"><parameter name="content">x</parameter></invoke></minimax:tool_call>',
+      },
+    ]);
+  });
+
+  it("recovers MiniMax forced tool-choice text responses as write-material tool calls", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 10, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "text",
+            text: "这是直接返回的报告正文",
+          },
+        },
+        {
+          type: "content_block_stop",
+          index: 0,
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 10, output_tokens: 4 },
+        },
+      ]),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel({
+        provider: "minimax",
+        baseUrl: "https://api.minimax.chat",
+      }),
+      {
+        messages: [{ role: "user", content: "提交报告" }],
+        tools: [
+          {
+            name: "openviking_write_material",
+            description: "Write report content",
+            parameters: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+              },
+              required: ["content"],
+            },
+          },
+        ],
+      } as unknown as AnthropicStreamContext,
+      {
+        apiKey: "sk-minimax",
+        toolChoice: { type: "tool", name: "openviking_write_material" },
+      } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("toolUse");
+    expect(result.content).toEqual([
+      expect.objectContaining({
+        type: "toolCall",
+        name: "openviking_write_material",
+        arguments: { content: "这是直接返回的报告正文" },
+      }),
+    ]);
+    expect(latestAnthropicRequest().payload.tool_choice).toEqual({
+      type: "tool",
+      name: "openviking_write_material",
+    });
+  });
+
+  it("recovers MiniMax forced tool-choice text responses without content_block_stop events", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 10, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "先检查数据", signature: "sig_1" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "，再提交结果" },
+        },
+        {
+          type: "content_block_start",
+          index: 1,
+          content_block: { type: "text", text: "这是直接返回的" },
+        },
+        {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "报告正文" },
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 10, output_tokens: 4 },
+        },
+      ]),
+    );
+
+    const streamFn = createAnthropicMessagesTransportStreamFn();
+    const stream = await Promise.resolve(
+      streamFn(
+        makeAnthropicTransportModel({
+          provider: "minimax",
+          baseUrl: "https://api.minimax.chat",
+        }),
+        {
+          messages: [{ role: "user", content: "提交报告" }],
+          tools: [
+            {
+              name: "openviking_write_material",
+              description: "Write report content",
+              parameters: {
+                type: "object",
+                properties: {
+                  content: { type: "string" },
+                },
+                required: [],
+              },
+            },
+          ],
+        } as unknown as AnthropicStreamContext,
+        {
+          apiKey: "sk-minimax",
+          toolChoice: { type: "tool", name: "openviking_write_material" },
+        } as AnthropicStreamOptions,
+      ),
+    );
+    const events: Array<{ type?: string; content?: string; toolCall?: { name?: string } }> = [];
+    for await (const event of stream as AsyncIterable<{
+      type?: string;
+      content?: string;
+      toolCall?: { name?: string };
+    }>) {
+      events.push(event);
+    }
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("toolUse");
+    expect(result.content).toEqual([
+      expect.objectContaining({
+        type: "thinking",
+        thinking: "先检查数据，再提交结果",
+      }),
+      expect.objectContaining({
+        type: "toolCall",
+        name: "openviking_write_material",
+        arguments: { content: "这是直接返回的报告正文" },
+      }),
+    ]);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "thinking_end", content: "先检查数据，再提交结果" }),
+        expect.objectContaining({
+          type: "toolcall_end",
+          toolCall: expect.objectContaining({ name: "openviking_write_material" }),
+        }),
+      ]),
+    );
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "text_end", content: expect.any(String) }),
+      ]),
+    );
+    expect(latestAnthropicRequest().payload.tool_choice).toEqual({
+      type: "tool",
+      name: "openviking_write_material",
+    });
+    expect(latestAnthropicRequest().payload.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "openviking_write_material",
+          input_schema: expect.objectContaining({ required: [] }),
+        }),
+      ]),
+    );
+  });
+
+  it("recovers MiniMax forced tool-choice text responses when tool_choice is injected via onPayload", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 10, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "先整理结构", signature: "sig_1" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "，再提交正文" },
+        },
+        {
+          type: "content_block_start",
+          index: 1,
+          content_block: { type: "text", text: "这是通过 onPayload 注入后返回的" },
+        },
+        {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "正式报告正文" },
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 10, output_tokens: 4 },
+        },
+      ]),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel({
+        provider: "minimax",
+        baseUrl: "https://api.minimax.chat",
+      }),
+      {
+        messages: [{ role: "user", content: "提交报告" }],
+        tools: [
+          {
+            name: "openviking_write_material",
+            description: "Write report content",
+            parameters: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+              },
+              required: [],
+            },
+          },
+        ],
+      } as unknown as AnthropicStreamContext,
+      {
+        apiKey: "sk-minimax",
+        onPayload: (payload) => {
+          const payloadRecord = payload as Record<string, unknown>;
+          return {
+            ...payloadRecord,
+            tool_choice: {
+              type: "tool",
+              name: "openviking_write_material",
+            },
+          };
+        },
+      } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("toolUse");
+    expect(result.content).toEqual([
+      expect.objectContaining({
+        type: "thinking",
+        thinking: "先整理结构，再提交正文",
+      }),
+      expect.objectContaining({
+        type: "toolCall",
+        name: "openviking_write_material",
+        arguments: { content: "这是通过 onPayload 注入后返回的正式报告正文" },
+      }),
+    ]);
+    expect(latestAnthropicRequest().payload.tool_choice).toEqual({
+      type: "tool",
+      name: "openviking_write_material",
+    });
+  });
+
+  it("does not recover forced tool-choice text responses for non-MiniMax providers", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 10, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "这是普通文本" },
+        },
+        {
+          type: "content_block_stop",
+          index: 0,
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 10, output_tokens: 3 },
+        },
+      ]),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel(),
+      {
+        messages: [{ role: "user", content: "提交报告" }],
+        tools: [
+          {
+            name: "openviking_write_material",
+            description: "Write report content",
+            parameters: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+              },
+              required: ["content"],
+            },
+          },
+        ],
+      } as unknown as AnthropicStreamContext,
+      {
+        apiKey: "sk-ant-api",
+        toolChoice: { type: "tool", name: "openviking_write_material" },
+      } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.content).toEqual([{ type: "text", text: "这是普通文本" }]);
+  });
+
+  it("recovers forced write-material text even when MiniMax emits an unrelated tool_use block", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 11, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "call_noise_1",
+            name: "noise.unused_tool",
+            input: {},
+          },
+        },
+        {
+          type: "content_block_stop",
+          index: 0,
+        },
+        {
+          type: "content_block_start",
+          index: 1,
+          content_block: { type: "text", text: "这是模型直接返回的报告正文" },
+        },
+        {
+          type: "content_block_stop",
+          index: 1,
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 11, output_tokens: 5 },
+        },
+      ]),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel({
+        provider: "minimax",
+        baseUrl: "https://api.minimax.chat",
+      }),
+      {
+        messages: [{ role: "user", content: "提交报告" }],
+        tools: [
+          {
+            name: "openviking_write_material",
+            description: "Write report content",
+            parameters: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+              },
+              required: [],
+            },
+          },
+          {
+            name: "noise.unused_tool",
+            description: "noise",
+            parameters: {
+              type: "object",
+              properties: {},
+              required: [],
+            },
+          },
+        ],
+      } as unknown as AnthropicStreamContext,
+      {
+        apiKey: "sk-minimax",
+        toolChoice: { type: "tool", name: "openviking_write_material" },
+      } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("toolUse");
+    expect(result.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "toolCall",
+          name: "openviking_write_material",
+          arguments: { content: "这是模型直接返回的报告正文" },
+        }),
+      ]),
+    );
+  });
+
+  it("does not recover MiniMax text responses when tool_choice is not forced", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 9, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "正文但没有 forced tool_choice" },
+        },
+        {
+          type: "content_block_stop",
+          index: 0,
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 9, output_tokens: 3 },
+        },
+      ]),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel({
+        provider: "minimax",
+        baseUrl: "https://api.minimax.chat",
+      }),
+      {
+        messages: [{ role: "user", content: "提交报告" }],
+        tools: [
+          {
+            name: "openviking_write_material",
+            description: "Write report content",
+            parameters: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+              },
+            },
+          },
+        ],
+      } as unknown as AnthropicStreamContext,
+      {
+        apiKey: "sk-minimax",
+      } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.content).toEqual([{ type: "text", text: "正文但没有 forced tool_choice" }]);
+  });
+
+  it("does not recover MiniMax text responses when forced tool schema is not single-string content", async () => {
+    guardedFetchMock.mockResolvedValueOnce(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { id: "msg_1", usage: { input_tokens: 9, output_tokens: 0 } },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "正文但 schema 不匹配" },
+        },
+        {
+          type: "content_block_stop",
+          index: 0,
+        },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { input_tokens: 9, output_tokens: 3 },
+        },
+      ]),
+    );
+
+    const result = await runTransportStream(
+      makeAnthropicTransportModel({
+        provider: "minimax",
+        baseUrl: "https://api.minimax.chat",
+      }),
+      {
+        messages: [{ role: "user", content: "提交报告" }],
+        tools: [
+          {
+            name: "openviking_write_material",
+            description: "Write report content",
+            parameters: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+                format: { type: "string" },
+              },
+              required: ["content", "format"],
+            },
+          },
+        ],
+      } as unknown as AnthropicStreamContext,
+      {
+        apiKey: "sk-minimax",
+        toolChoice: { type: "tool", name: "openviking_write_material" },
+      } as AnthropicStreamOptions,
+    );
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.content).toEqual([{ type: "text", text: "正文但 schema 不匹配" }]);
+  });
+
   it("skips malformed tools when building Anthropic payloads", async () => {
     await runTransportStream(
       makeAnthropicTransportModel(),
@@ -853,6 +1499,56 @@ describe("anthropic transport stream", () => {
     expect(result.stopReason).toBe("aborted");
     expect(result.errorMessage).toBe("pre-aborted stream");
     expect(cancelReason).toBe(abortReason);
+  });
+
+  it("forces MiniMax anthropic-messages payload thinking to disabled before onPayload", async () => {
+    let observedThinking: unknown;
+
+    await runTransportStream(
+      makeAnthropicTransportModel({
+        provider: "minimax",
+        baseUrl: "https://api.minimax.chat",
+      }),
+      {
+        messages: [{ role: "user", content: "请分析" }],
+      } as AnthropicStreamContext,
+      {
+        apiKey: "sk-minimax",
+        reasoning: "high",
+        onPayload: (payload) => {
+          observedThinking = (payload as Record<string, unknown>).thinking;
+          return payload;
+        },
+      } as AnthropicStreamOptions,
+    );
+
+    expect(observedThinking).toEqual({ type: "disabled" });
+    expect(latestAnthropicRequest().payload.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("keeps non-MiniMax anthropic-messages thinking enabled for onPayload", async () => {
+    let observedThinking: unknown;
+
+    await runTransportStream(
+      makeAnthropicTransportModel({
+        id: "claude-3-7-sonnet-latest",
+        name: "Claude 3.7 Sonnet",
+      }),
+      {
+        messages: [{ role: "user", content: "请分析" }],
+      } as AnthropicStreamContext,
+      {
+        apiKey: "sk-ant-api",
+        reasoning: "high",
+        onPayload: (payload) => {
+          observedThinking = (payload as Record<string, unknown>).thinking;
+          return payload;
+        },
+      } as AnthropicStreamOptions,
+    );
+
+    expect(observedThinking).toMatchObject({ type: "enabled" });
+    expect(latestAnthropicRequest().payload.thinking).toMatchObject({ type: "enabled" });
   });
 
   it("maps adaptive thinking effort for Claude 4.6 transport runs", async () => {

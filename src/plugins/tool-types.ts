@@ -19,6 +19,8 @@ export type OpenClawPluginToolContext = {
   sessionKey?: string;
   /** Ephemeral session UUID - regenerated on /new and /reset. Use for per-conversation isolation. */
   sessionId?: string;
+  /** Trusted per-turn single-worker command, when the runtime is executing a single-worker wake. */
+  singleWorkerCommand?: unknown;
   browser?: {
     sandboxBridgeUrl?: string;
     allowHostControl?: boolean;

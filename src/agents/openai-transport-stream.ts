@@ -80,10 +80,8 @@ type OpenAICompletionsOptions = BaseStreamOptions & {
     | "none"
     | "required"
     | {
-        type: "function";
-        function: {
-          name: string;
-        };
+        type: "tool";
+        name: string;
       };
   reasoning?: OpenAIReasoningEffort;
   reasoningEffort?: OpenAIReasoningEffort;

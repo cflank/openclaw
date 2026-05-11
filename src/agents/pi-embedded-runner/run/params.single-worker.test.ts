@@ -9,8 +9,7 @@ import {
   renderSingleWorkerPromptTemplate,
   resolveSingleWorkerProfilePrompt,
   renderOpenVikingMaterialBrief,
-  renderRuntimeTargetBrief,
-  renderOpenVikingWriteTargetBrief,
+  resolveSingleWorkerSystemContextPolicy,
   withRuntimeMarkers,
   writeWorkspaceEvidence,
   type SingleWorkerCommand,
@@ -86,6 +85,17 @@ describe("single-worker runtime context", () => {
     });
   });
 
+  it("defaults system context policy to openclaw_default", () => {
+    const command = buildCommand("/tmp/evidence");
+    expect(resolveSingleWorkerSystemContextPolicy(command)).toBe("openclaw_default");
+  });
+
+  it("accepts single_worker_minimal system context policy", () => {
+    const command = buildCommand("/tmp/evidence");
+    command.system_context_policy = "single_worker_minimal";
+    expect(resolveSingleWorkerSystemContextPolicy(command)).toBe("single_worker_minimal");
+  });
+
   it("ensures evidence dir and writes workspace evidence without text body", async () => {
     const root = await makeTempDir("openclaw-single-worker-");
     const evidenceDir = path.join(root, "evidence");
@@ -136,7 +146,7 @@ describe("single-worker runtime context", () => {
       },
     ];
     const brief = renderOpenVikingMaterialBrief(command);
-    expect(brief).toContain("[OpenVikingReadableMaterials]");
+    expect(brief).toContain("[ApprovedMaterials]");
     expect(brief).toContain("worker=market_analyst");
     expect(brief).toContain("stage=frontline");
     expect(brief).toContain("material_id=mat-1");
@@ -148,45 +158,7 @@ describe("single-worker runtime context", () => {
     expect(brief).not.toContain("上游正文");
   });
 
-  it("renders write target brief with canonical L1 target uri", () => {
-    const command = buildCommand("/tmp/evidence");
-    const brief = renderOpenVikingWriteTargetBrief(command);
-    expect(brief).toContain("[OpenVikingWriteTarget]");
-    expect(brief).toContain("run_id=run-1");
-    expect(brief).toContain("target_name=market_analysis_report");
-    expect(brief).toContain(
-      "uri=viking://resources/workflow/run-1/frontline/market_analyst/call-1/report.md",
-    );
-    expect(brief).toContain("worker_id=market_analyst");
-    expect(brief).toContain("stage=frontline");
-    expect(brief).toContain("call_id=call-1");
-  });
-
-  it("renders runtime target brief from command.runtime_vars", () => {
-    const command = buildCommand("/tmp/evidence");
-    command.runtime_vars = {
-      ticker: "AAPL",
-      company_name: "Apple",
-      market: "US",
-      currency: "USD",
-      currency_symbol: "$",
-      current_date: "2026-05-03",
-      start_date: "2026-05-03",
-      end_date: "2026-05-03",
-    };
-    const brief = renderRuntimeTargetBrief(command);
-    expect(brief).toContain("[RuntimeTarget]");
-    expect(brief).toContain("ticker=AAPL");
-    expect(brief).toContain("company_name=Apple");
-    expect(brief).toContain("market=US");
-    expect(brief).toContain("currency=USD");
-    expect(brief).toContain("currency_symbol=$");
-    expect(brief).toContain("current_date=2026-05-03");
-    expect(brief).toContain("start_date=2026-05-03");
-    expect(brief).toContain("end_date=2026-05-03");
-  });
-
-  it("appends material brief into prompt exactly once", () => {
+  it("appends only upstream material brief into prompt exactly once", () => {
     const command = buildCommand("/tmp/evidence");
     command.upstream_materials = [
       {
@@ -202,14 +174,13 @@ describe("single-worker runtime context", () => {
       },
     ];
     const appended = appendOpenVikingMaterialBrief("原始提示词", command);
-    expect(appended).toContain("[RuntimeTarget]");
-    expect(appended).toContain("[OpenVikingReadableMaterials]");
-    expect(appended).toContain("[OpenVikingWriteTarget]");
-    expect(appended).toContain("ticker=AAPL");
-    expect(appended).toContain("run_id=run-1");
-    expect(appended).toContain(
-      "uri=viking://resources/workflow/run-1/frontline/market_analyst/call-1/report.md",
-    );
+    expect(appended).toContain("[ApprovedMaterials]");
+    expect(appended).not.toContain("[RuntimeTarget]");
+    expect(appended).not.toContain("[ReportSubmission]");
+    expect(appended).not.toContain("ticker=AAPL");
+    expect(appended).not.toContain("visible report-writing tool");
+    expect(appended).not.toContain("write_tool_args=");
+    expect(appended).not.toContain("uri=viking://resources/workflow/run-1");
     const appendedTwice = appendOpenVikingMaterialBrief(appended, command);
     expect(appendedTwice).toBe(appended);
   });
@@ -236,10 +207,10 @@ describe("single-worker runtime context", () => {
       "- ticker=OLD",
       "- market=OLD",
       "",
-      "[OpenVikingReadableMaterials]",
+      "[ApprovedMaterials]",
       "- material_id=legacy",
       "",
-      "[OpenVikingWriteTarget]",
+      "[ReportSubmission]",
       "- uri=viking://legacy/uri.md",
       "",
       "结尾说明",
@@ -250,29 +221,22 @@ describe("single-worker runtime context", () => {
     expect(appended).not.toContain("ticker=OLD");
     expect(appended).not.toContain("material_id=legacy");
     expect(appended).not.toContain("viking://legacy/uri.md");
-    expect(appended).toContain("ticker=AAPL");
+    expect(appended).not.toContain("ticker=AAPL");
     expect(appended).toContain("material_id=mat-new");
-    expect(appended).toContain(
-      "uri=viking://resources/workflow/run-1/frontline/market_analyst/call-1/report.md",
-    );
+    expect(appended).not.toContain("visible report-writing tool");
+    expect(appended).not.toContain("[ReportSubmission]");
+    expect(appended).not.toContain("write_tool_args=");
+    expect(appended).not.toContain("uri=viking://resources/workflow/run-1");
   });
 
-  it("still appends real write target section when prompt only references header token in prose", () => {
+  it("keeps prompt unchanged when there are no upstream materials", () => {
     const command = buildCommand("/tmp/evidence");
-    const promptWithReferenceOnly =
-      "请在最终调用中使用 [OpenVikingWriteTarget]，不要自行猜测 URI。";
+    const promptWithReferenceOnly = "请在最终调用中使用 [ReportSubmission] 提交报告。";
     const appended = appendOpenVikingMaterialBrief(promptWithReferenceOnly, command);
-    expect(appended).toContain("[RuntimeTarget]");
-    expect(appended).toContain("[OpenVikingReadableMaterials]");
-    expect(appended).toContain("[OpenVikingWriteTarget]");
-    expect(appended).toContain("run_id=run-1");
-    expect(appended).toContain(
-      "uri=viking://resources/workflow/run-1/frontline/market_analyst/call-1/report.md",
-    );
-    expect(appended).toContain("target_name=market_analysis_report");
+    expect(appended).toBe(promptWithReferenceOnly);
   });
 
-  it("still appends real runtime target section when prompt mentions runtime target in prose", () => {
+  it("does not append runtime target section when prompt mentions runtime target in prose", () => {
     const command = buildCommand("/tmp/evidence");
     command.runtime_vars = {
       ticker: "AAPL",
@@ -287,9 +251,9 @@ describe("single-worker runtime context", () => {
     const promptWithRuntimeHint =
       "请使用 runtime target 里的 ticker/company，不要写 [RuntimeTarget] 占位结构。";
     const appended = appendOpenVikingMaterialBrief(promptWithRuntimeHint, command);
-    expect(appended).toContain("[RuntimeTarget]");
-    expect(appended).toContain("ticker=AAPL");
-    expect(appended).toContain("company_name=Apple");
+    expect(appended).toBe(promptWithRuntimeHint);
+    expect(appended).not.toContain("ticker=AAPL");
+    expect(appended).not.toContain("company_name=Apple");
     expect(appended).not.toContain("{ticker}");
     expect(appended).not.toContain("{company_name}");
   });

@@ -1,6 +1,6 @@
 import { selectApplicableRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolvePluginTools } from "../plugins/tools.js";
+import { ensureStandalonePluginToolRegistryLoaded, resolvePluginTools } from "../plugins/tools.js";
 import { getActiveSecretsRuntimeSnapshot } from "../secrets/runtime.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { listProfilesForProvider } from "./auth-profiles.js";
@@ -53,13 +53,25 @@ export function resolveOpenClawPluginToolsForOptions(params: {
     });
   };
   const authProfileStore = params.options?.authProfileStore;
+  const toolContext = resolveOpenClawPluginToolInputs({
+    options: params.options,
+    resolvedConfig: params.resolvedConfig,
+    runtimeConfig: resolveCurrentRuntimeConfig(),
+    getRuntimeConfig: resolveCurrentRuntimeConfig,
+  });
+  ensureStandalonePluginToolRegistryLoaded({
+    context: toolContext.context,
+    toolAllowlist: params.options?.pluginToolAllowlist,
+    allowGatewaySubagentBinding: params.options?.allowGatewaySubagentBinding,
+    ...(authProfileStore
+      ? {
+          hasAuthForProvider: (providerId) =>
+            listProfilesForProvider(authProfileStore, providerId).length > 0,
+        }
+      : {}),
+  });
   const pluginTools = resolvePluginTools({
-    ...resolveOpenClawPluginToolInputs({
-      options: params.options,
-      resolvedConfig: params.resolvedConfig,
-      runtimeConfig: resolveCurrentRuntimeConfig(),
-      getRuntimeConfig: resolveCurrentRuntimeConfig,
-    }),
+    ...toolContext,
     existingToolNames: params.existingToolNames ?? new Set<string>(),
     toolAllowlist: params.options?.pluginToolAllowlist,
     allowGatewaySubagentBinding: params.options?.allowGatewaySubagentBinding,

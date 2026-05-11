@@ -4,15 +4,19 @@ import { activateSecretsRuntimeSnapshot, clearSecretsRuntimeSnapshot } from "../
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 
 const hoisted = vi.hoisted(() => ({
+  ensureStandalonePluginToolRegistryLoaded: vi.fn(),
   resolvePluginTools: vi.fn(),
 }));
 
 vi.mock("../plugins/tools.js", () => ({
+  ensureStandalonePluginToolRegistryLoaded: (...args: unknown[]) =>
+    hoisted.ensureStandalonePluginToolRegistryLoaded(...args),
   resolvePluginTools: (...args: unknown[]) => hoisted.resolvePluginTools(...args),
 }));
 
 describe("createOpenClawTools browser plugin integration", () => {
   afterEach(() => {
+    hoisted.ensureStandalonePluginToolRegistryLoaded.mockReset();
     hoisted.resolvePluginTools.mockReset();
     clearSecretsRuntimeSnapshot();
   });
@@ -138,6 +142,34 @@ describe("createOpenClawTools browser plugin integration", () => {
         allowGatewaySubagentBinding: true,
       }),
     );
+  });
+
+  it("loads the current-turn plugin tool registry before resolving tools", () => {
+    hoisted.resolvePluginTools.mockReturnValue([]);
+    const config = {
+      plugins: {
+        entries: {
+          "claw-trade-frontline-tools": { enabled: true },
+        },
+      },
+    } as OpenClawConfig;
+
+    resolveOpenClawPluginToolsForOptions({
+      options: {
+        config,
+        pluginToolAllowlist: ["market_market_data_pack", "openviking_write_material"],
+      },
+      resolvedConfig: config,
+    });
+
+    expect(hoisted.ensureStandalonePluginToolRegistryLoaded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolAllowlist: ["market_market_data_pack", "openviking_write_material"],
+      }),
+    );
+    expect(
+      hoisted.ensureStandalonePluginToolRegistryLoaded.mock.invocationCallOrder[0],
+    ).toBeLessThan(hoisted.resolvePluginTools.mock.invocationCallOrder[0]);
   });
 
   it("does not pass a stale active snapshot as plugin runtime config for a resolved run config", () => {

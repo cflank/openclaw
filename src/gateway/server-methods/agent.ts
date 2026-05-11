@@ -12,6 +12,7 @@ import {
   resolvePublicAgentAvatarSource,
 } from "../../agents/identity-avatar.js";
 import type { AgentInternalEvent } from "../../agents/internal-events.js";
+import { SINGLE_WORKER_DEFAULT_PROMPT } from "../../agents/pi-embedded-runner/run/params.js";
 import { resolveTrustedGroupId } from "../../agents/pi-tools.policy.js";
 import { resolveSandboxConfigForAgent } from "../../agents/sandbox/config.js";
 import {
@@ -1796,7 +1797,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     try {
       const runResult = await agentCommandFromIngress(
         {
-          message: "Complete this worker turn using configured workspace instructions.",
+          message: SINGLE_WORKER_DEFAULT_PROMPT,
           agentId: request.command.worker_id,
           sessionId: `single-worker-${openclawRunId}`,
           sessionKey: `agent:${sessionAgentId}:single-worker:${openclawRunId}`,

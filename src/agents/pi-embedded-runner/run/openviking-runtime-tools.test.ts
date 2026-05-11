@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
 import type { AnyAgentTool } from "../../pi-tools.types.js";
@@ -16,7 +14,11 @@ import {
   resolveRuntimeWriteReceiptPathForRecord,
   resolveToolResultDetails,
 } from "./attempt.js";
-import { createRuntimeContext, type SingleWorkerCommand } from "./params.js";
+import {
+  createRuntimeContext,
+  SINGLE_WORKER_DEFAULT_PROMPT,
+  type SingleWorkerCommand,
+} from "./params.js";
 
 function makeTool(name: string): AnyAgentTool {
   return {
@@ -79,76 +81,61 @@ function makeCommand(allowedTools: string[]): SingleWorkerCommand {
   };
 }
 
-function resolveNonZeroExecutableForTest(): string {
-  const candidates =
-    process.platform === "win32"
-      ? [process.env.ComSpec, "C:\\\\Windows\\\\System32\\\\cmd.exe"]
-      : ["/bin/sh", "/usr/bin/env", "/bin/false"];
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  throw new Error("no executable available for non-zero exit fixture");
-}
-
 describe("single-worker runtime tool preparation", () => {
   it("adds openviking runtime tools and keeps allowlist narrowing authoritative", () => {
     const runtimeContext = createRuntimeContext({
-      command: makeCommand(["market.stock_price", "openviking.write_material"]),
+      command: makeCommand(["custom.local_tool", "openviking_write_material"]),
       openclawRunId: "oc-run-1",
     });
     const prepared = prepareSingleWorkerRuntimeTools({
-      tools: [],
+      tools: [makeTool("custom.local_tool")],
       runtimeContext,
       toolsAllow: [
-        "market.stock_price",
-        "openviking.write_material",
-        "openviking.read_with_capability",
+        "custom.local_tool",
+        "openviking_write_material",
+        "openviking_read_with_capability",
       ],
     });
 
     expect(prepared.map((tool) => tool.name)).toEqual([
-      "market.stock_price",
-      "openviking.write_material",
+      "custom.local_tool",
+      "openviking_write_material",
     ]);
-    const stock = prepared.find((tool) => tool.name === "market.stock_price");
-    const stockSchema = (stock?.parameters ?? {}) as Record<string, unknown>;
-    expect(stockSchema.additionalProperties).toBe(false);
   });
 
   it("uses intersection of runtime allowed_tools and params.toolsAllow", () => {
     const runtimeContext = createRuntimeContext({
-      command: makeCommand(["openviking.write_material", "openviking.read_with_capability"]),
+      command: makeCommand(["openviking_write_material", "openviking_read_with_capability"]),
       openclawRunId: "oc-run-2",
     });
     const prepared = prepareSingleWorkerRuntimeTools({
       tools: [],
       runtimeContext,
-      toolsAllow: ["openviking.read_with_capability"],
+      toolsAllow: ["openviking_read_with_capability"],
     });
 
-    expect(prepared.map((tool) => tool.name)).toEqual(["openviking.read_with_capability"]);
+    expect(prepared.map((tool) => tool.name)).toEqual(["openviking_read_with_capability"]);
   });
 
   it("hides pm_decision from non-PM write_material schema", () => {
     const runtimeContext = createRuntimeContext({
-      command: makeCommand(["openviking.write_material"]),
+      command: makeCommand(["openviking_write_material"]),
       openclawRunId: "oc-run-pm-schema-non-pm",
     });
     const prepared = prepareSingleWorkerRuntimeTools({
       tools: [],
       runtimeContext,
-      toolsAllow: ["openviking.write_material"],
+      toolsAllow: ["openviking_write_material"],
     });
-    const writeTool = prepared.find((tool) => tool.name === "openviking.write_material");
+    const writeTool = prepared.find((tool) => tool.name === "openviking_write_material");
     expect(writeTool).toBeDefined();
     const properties = readToolSchemaProperties(writeTool);
     expect(Object.prototype.hasOwnProperty.call(properties, "pm_decision")).toBe(false);
+    expect(Object.keys(properties)).toEqual(["content"]);
   });
 
   it("keeps pm_decision in PM write_material schema", () => {
-    const command = makeCommand(["openviking.write_material"]);
+    const command = makeCommand(["openviking_write_material"]);
     command.agent = "portfolio_manager";
     command.worker_id = "portfolio_manager";
     command.stage = "portfolio_decision";
@@ -166,12 +153,13 @@ describe("single-worker runtime tool preparation", () => {
     const prepared = prepareSingleWorkerRuntimeTools({
       tools: [],
       runtimeContext,
-      toolsAllow: ["openviking.write_material"],
+      toolsAllow: ["openviking_write_material"],
     });
-    const writeTool = prepared.find((tool) => tool.name === "openviking.write_material");
+    const writeTool = prepared.find((tool) => tool.name === "openviking_write_material");
     expect(writeTool).toBeDefined();
     const properties = readToolSchemaProperties(writeTool);
     expect(Object.prototype.hasOwnProperty.call(properties, "pm_decision")).toBe(true);
+    expect(Object.keys(properties).sort()).toEqual(["content", "pm_decision"]);
     const pmDecisionSchema = readSchemaObjectProperty(properties, "pm_decision");
     const pmDecisionProperties = readSchemaObjectProperty(pmDecisionSchema, "properties");
     const ratingSchema = readSchemaObjectProperty(pmDecisionProperties, "rating");
@@ -188,22 +176,22 @@ describe("single-worker runtime tool preparation", () => {
 
   it("narrows read_with_capability model-visible schema to material_id + layer", () => {
     const runtimeContext = createRuntimeContext({
-      command: makeCommand(["openviking.read_with_capability"]),
+      command: makeCommand(["openviking_read_with_capability"]),
       openclawRunId: "oc-run-read-schema",
     });
     const prepared = prepareSingleWorkerRuntimeTools({
       tools: [],
       runtimeContext,
-      toolsAllow: ["openviking.read_with_capability"],
+      toolsAllow: ["openviking_read_with_capability"],
     });
-    const readTool = prepared.find((tool) => tool.name === "openviking.read_with_capability");
+    const readTool = prepared.find((tool) => tool.name === "openviking_read_with_capability");
     expect(readTool).toBeDefined();
     const properties = readToolSchemaProperties(readTool);
     expect(Object.keys(properties).sort()).toEqual(["layer", "material_id"]);
   });
 
   it("appends upstream material brief into prompt when runtimeContext exists", () => {
-    const command = makeCommand(["openviking.read_with_capability"]);
+    const command = makeCommand(["openviking_read_with_capability"]);
     command.upstream_materials = [
       {
         material_id: "mat-1",
@@ -222,13 +210,13 @@ describe("single-worker runtime tool preparation", () => {
       openclawRunId: "oc-run-3",
     });
     const prompt = appendSingleWorkerMaterialBriefToPrompt("原始提示词", runtimeContext);
-    expect(prompt).toContain("[OpenVikingReadableMaterials]");
-    expect(prompt).toContain("[OpenVikingWriteTarget]");
-    expect(prompt).toContain("run_id=run-1");
-    expect(prompt).toContain(
+    expect(prompt).toContain("[ApprovedMaterials]");
+    expect(prompt).not.toContain("[ReportSubmission]");
+    expect(prompt).not.toContain("visible report-writing tool");
+    expect(prompt).not.toContain(
       "uri=viking://resources/workflow/run-1/frontline/market_analyst/call-1/report.md",
     );
-    expect(prompt).toContain("target_name=report");
+    expect(prompt).not.toContain("target_name=report");
     expect(prompt).toContain("material_id=mat-1");
     expect(prompt).toContain("recommended_read=material_id+layer(L1)");
     expect(prompt).toContain("layer=L1");
@@ -239,11 +227,11 @@ describe("single-worker runtime tool preparation", () => {
 
   it("prepends rendered profile prompt before runtime instruction text", () => {
     const prompt = prependSingleWorkerProfilePromptToPrompt(
-      "Complete this worker turn using configured workspace instructions.",
+      SINGLE_WORKER_DEFAULT_PROMPT,
       "Ticker=AAPL Company=Apple Currency=USD Date=2026-05-03",
     );
     expect(prompt.startsWith("Ticker=AAPL Company=Apple Currency=USD Date=2026-05-03")).toBe(true);
-    expect(prompt).toContain("Complete this worker turn using configured workspace instructions.");
+    expect(prompt).not.toContain(SINGLE_WORKER_DEFAULT_PROMPT);
   });
 
   it("keeps prompt unchanged when runtimeContext is absent", () => {
@@ -251,133 +239,40 @@ describe("single-worker runtime tool preparation", () => {
     expect(prompt).toBe("原始提示词");
   });
 
-  it("keeps local market tools in allowlist without sidecar runtime dependency", () => {
-    const runtimeContext = createRuntimeContext({
-      command: makeCommand(["market.stock_price", "openviking.write_material"]),
-      openclawRunId: "oc-run-pre-bundle",
-    });
-    const prepared = prepareSingleWorkerRuntimeTools({
-      tools: [],
-      runtimeContext,
-      toolsAllow: ["market.stock_price", "openviking.write_material"],
-    });
-    expect(prepared.map((tool) => tool.name)).toEqual([
-      "market.stock_price",
-      "openviking.write_material",
-    ]);
-  });
-
   it("fails fast when allowed tool is missing from runtime registrations", () => {
     const runtimeContext = createRuntimeContext({
-      command: makeCommand(["missing.local.tool", "openviking.write_material"]),
+      command: makeCommand(["missing.local.tool", "openviking_write_material"]),
       openclawRunId: "oc-run-missing-tool",
     });
     expect(() =>
       prepareSingleWorkerRuntimeTools({
         tools: [],
         runtimeContext,
-        toolsAllow: ["missing.local.tool", "openviking.write_material"],
+        toolsAllow: ["missing.local.tool", "openviking_write_material"],
       }),
     ).toThrowError(/missing runtime registration/i);
   });
 
-  it("registers frontline tools for non-market frontline workers", () => {
-    const runtimeContext = createRuntimeContext({
-      command: makeCommand(["fundamentals_data", "openviking.write_material"]),
-      openclawRunId: "oc-run-frontline-tools",
-    });
-    const prepared = prepareSingleWorkerRuntimeTools({
-      tools: [],
-      runtimeContext,
-      toolsAllow: ["fundamentals_data", "openviking.write_material"],
-    });
-    expect(prepared.map((tool) => tool.name)).toEqual([
-      "fundamentals_data",
-      "openviking.write_material",
-    ]);
-    const fundamentals = prepared.find((tool) => tool.name === "fundamentals_data");
-    const schema = (fundamentals?.parameters ?? {}) as Record<string, unknown>;
-    expect(schema.additionalProperties).toBe(false);
-  });
-
-  it("registers news and social runtime tools without sidecar dependencies", () => {
-    const runtimeContext = createRuntimeContext({
-      command: makeCommand(["company_news", "macro_news", "social_sentiment"]),
-      openclawRunId: "oc-run-frontline-news-social",
-    });
-    const prepared = prepareSingleWorkerRuntimeTools({
-      tools: [],
-      runtimeContext,
-      toolsAllow: ["company_news", "macro_news", "social_sentiment"],
-    });
-    expect(prepared.map((tool) => tool.name)).toEqual([
-      "company_news",
-      "macro_news",
-      "social_sentiment",
-    ]);
-    for (const tool of prepared) {
-      const schema = (tool.parameters ?? {}) as Record<string, unknown>;
-      expect(schema.additionalProperties).toBe(false);
-    }
-  });
-
   it("fails closed after effective tools are finalized", () => {
     const runtimeContext = createRuntimeContext({
-      command: makeCommand(["market.stock_price", "openviking.write_material"]),
+      command: makeCommand(["custom.local_tool", "openviking_write_material"]),
       openclawRunId: "oc-run-final-check",
     });
     expect(() =>
       assertSingleWorkerAllowedToolsRegistered({
         runtimeContext,
-        toolsAllow: ["market.stock_price", "openviking.write_material"],
-        registeredTools: [makeTool("openviking.write_material")],
+        toolsAllow: ["custom.local_tool", "openviking_write_material"],
+        registeredTools: [makeTool("openviking_write_material")],
         allowDeferredBundleMcpTools: false,
       }),
     ).toThrowError(/missing runtime registration/i);
   });
-
-  it("treats market tool non-zero subprocess exit as execution failure", async () => {
-    const runtimeContext = createRuntimeContext({
-      command: makeCommand(["market.stock_price"]),
-      openclawRunId: "oc-run-market-exit-failure",
-    });
-    const prepared = prepareSingleWorkerRuntimeTools({
-      tools: [],
-      runtimeContext,
-      toolsAllow: ["market.stock_price"],
-      workerWorkspaceRoot: path.resolve(process.cwd(), "..", "..", "agents", "market_analyst"),
-    });
-    const stockPriceTool = prepared.find((tool) => tool.name === "market.stock_price");
-    expect(stockPriceTool).toBeDefined();
-
-    const prevPython = process.env.OPENCLAW_MARKET_TOOL_PYTHON;
-    process.env.OPENCLAW_MARKET_TOOL_PYTHON = resolveNonZeroExecutableForTest();
-    try {
-      await expect(
-        stockPriceTool!.execute("tool-call-1", {
-          ticker: "AAPL",
-          start_date: "2026-05-03",
-          end_date: "2026-05-03",
-        }),
-      ).rejects.toThrow(/market\.stock_price entrypoint failed: exit_code=/i);
-    } finally {
-      if (prevPython === undefined) {
-        delete process.env.OPENCLAW_MARKET_TOOL_PYTHON;
-      } else {
-        process.env.OPENCLAW_MARKET_TOOL_PYTHON = prevPython;
-      }
-    }
-  });
 });
 
 describe("single-worker openviking MCP config", () => {
-  it("does not build MCP override for no-sidecar market tools", () => {
+  it("does not build MCP override for non-bundle tools", () => {
     const runtimeContext = createRuntimeContext({
-      command: makeCommand([
-        "market.stock_price",
-        "market.techlab_analyze",
-        "openviking.write_material",
-      ]),
+      command: makeCommand(["custom.local_tool", "openviking_write_material"]),
       openclawRunId: "oc-run-mcp-override",
     });
     const override = resolveSingleWorkerMcpConfigOverride(runtimeContext);
@@ -469,22 +364,22 @@ describe("runtime tool result details", () => {
     expect(fields.capability_id).toBeUndefined();
   });
 
-  it("requires receipt_path for openviking.write_material success records", () => {
+  it("requires receipt_path for openviking_write_material success records", () => {
     expect(() =>
       resolveRuntimeWriteReceiptPathForRecord({
-        toolName: "openviking.write_material",
+        toolName: "openviking_write_material",
         resultDetails: {},
       }),
     ).toThrowError(/missing receipt_path/i);
     expect(
       resolveRuntimeWriteReceiptPathForRecord({
-        toolName: "openviking.write_material",
+        toolName: "openviking_write_material",
         resultDetails: { receipt_path: "/tmp/openviking-write-receipt.json" },
       }),
     ).toBe("/tmp/openviking-write-receipt.json");
     expect(
       resolveRuntimeWriteReceiptPathForRecord({
-        toolName: "openviking.write_material",
+        toolName: "openviking_write_material",
         resultDetails: { receiptPath: "/tmp/openviking-write-receipt-camel.json" },
       }),
     ).toBe("/tmp/openviking-write-receipt-camel.json");
@@ -493,7 +388,7 @@ describe("runtime tool result details", () => {
   it("ignores receipt_path requirement for non-write tools", () => {
     expect(
       resolveRuntimeWriteReceiptPathForRecord({
-        toolName: "market.stock_price",
+        toolName: "custom.local_tool",
         resultDetails: {},
       }),
     ).toBeUndefined();
@@ -514,10 +409,10 @@ describe("runtime tool result details", () => {
       resolveRuntimeToolCallErrorMessage({
         resultDetails: {
           status: "error",
-          error: "openviking.read_with_capability capability not found in command",
+          error: "openviking_read_with_capability capability not found in command",
         },
       }),
-    ).toBe("openviking.read_with_capability capability not found in command");
+    ).toBe("openviking_read_with_capability capability not found in command");
     expect(
       resolveRuntimeToolCallErrorMessage({
         resultDetails: {

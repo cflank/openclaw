@@ -63,11 +63,7 @@ export function createMinimaxThinkingDisabledWrapper(baseStreamFn: StreamFn | un
       onPayload: (payload) => {
         if (payload && typeof payload === "object") {
           const payloadObj = payload as Record<string, unknown>;
-          // Only inject if thinking is not already explicitly set.
-          // This preserves any intentional override from other wrappers.
-          if (payloadObj.thinking === undefined) {
-            payloadObj.thinking = { type: "disabled" };
-          }
+          payloadObj.thinking = { type: "disabled" };
         }
         return originalOnPayload?.(payload, model);
       },

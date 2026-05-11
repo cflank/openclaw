@@ -321,7 +321,7 @@ import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
-import { registerSingleWorkerFrontlineTools } from "./frontline-tools.js";
+import { resolveFinalAssistantVisibleText } from "./helpers.js";
 import {
   installHistoryImagePruneContextTransform,
   pruneProcessedHistoryImages,
@@ -329,17 +329,18 @@ import {
 import { detectAndLoadPromptImages } from "./images.js";
 import { buildAttemptReplayMetadata } from "./incomplete-turn.js";
 import { resolveLlmIdleTimeoutMs, streamWithIdleTimeout } from "./llm-idle-timeout.js";
-import { registerSingleWorkerMarketTools } from "./market-tools.js";
 import { resolveMessageMergeStrategy } from "./message-merge-strategy.js";
 import {
   MID_TURN_PRECHECK_ERROR_MESSAGE,
   isMidTurnPrecheckSignal,
   type MidTurnPrecheckRequest,
 } from "./midturn-precheck.js";
-import { registerOpenVikingTools } from "./openviking-tools.js";
+import { registerOpenVikingTools, writeOpenVikingMaterialFromRuntime } from "./openviking-tools.js";
 import {
   appendOpenVikingMaterialBrief,
   createRuntimeContext,
+  isSingleWorkerDefaultPrompt,
+  resolveSingleWorkerSystemContextPolicy,
   resolveSingleWorkerProfilePrompt,
   withRuntimeMarkers,
   writeWorkspaceEvidence,
@@ -354,6 +355,7 @@ import {
   queueRuntimeContextForNextTurn,
   resolveRuntimeContextPromptParts,
 } from "./runtime-context-prompt.js";
+import { buildSingleWorkerMinimalSystemContext } from "./single-worker-system-context.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 export {
@@ -895,15 +897,7 @@ export function prepareSingleWorkerRuntimeTools(params: {
   if (!params.runtimeContext) {
     return applyEmbeddedAttemptToolsAllow(params.tools, params.toolsAllow);
   }
-  const mergedTools = [
-    ...params.tools,
-    ...registerSingleWorkerMarketTools({
-      runtimeContext: params.runtimeContext,
-      workerWorkspaceRoot: params.workerWorkspaceRoot,
-    }),
-    ...registerSingleWorkerFrontlineTools(params.runtimeContext),
-    ...registerOpenVikingTools(params.runtimeContext),
-  ];
+  const mergedTools = [...params.tools, ...registerOpenVikingTools(params.runtimeContext)];
   // single-worker 阶段允许 bundle MCP 工具延迟到 materialize 后再校验，避免把“尚未挂载”误判成“缺注册”。
   assertSingleWorkerAllowedToolsRegistered({
     runtimeContext: params.runtimeContext,
@@ -916,6 +910,61 @@ export function prepareSingleWorkerRuntimeTools(params: {
     commandAllowedTools: params.runtimeContext.command.allowed_tools,
   });
   return applyEmbeddedAttemptToolsAllowExact(mergedTools, singleWorkerAllow);
+}
+
+type FinalAssistantMessageInput = Parameters<typeof resolveFinalAssistantVisibleText>[0];
+
+function resolveAssistantReportText(message: AgentMessage | undefined): string | undefined {
+  const text = resolveFinalAssistantVisibleText(message as FinalAssistantMessageInput | undefined);
+  return text?.trim() ? text.trim() : undefined;
+}
+
+function resolveSingleWorkerReportText(params: {
+  currentAttemptAssistant?: AgentMessage;
+  lastAssistant?: AgentMessage;
+  assistantTexts: string[];
+}): string {
+  const fromCurrentAttempt = resolveAssistantReportText(params.currentAttemptAssistant);
+  if (fromCurrentAttempt) {
+    return fromCurrentAttempt;
+  }
+  const fromLastAssistant = resolveAssistantReportText(params.lastAssistant);
+  if (fromLastAssistant) {
+    return fromLastAssistant;
+  }
+  const lastStreamText = params.assistantTexts.at(-1)?.trim();
+  if (lastStreamText) {
+    return lastStreamText;
+  }
+  return params.assistantTexts.join("\n\n").trim();
+}
+
+function shouldSaveRuntimeOpenVikingMaterial(params: {
+  runtimeContext?: RuntimeContext;
+  openvikingReceiptPath?: string;
+  reportText: string;
+  promptError: unknown;
+  aborted: boolean;
+  timedOut: boolean;
+  firstResponseStopRequested: boolean;
+}): boolean {
+  if (!params.runtimeContext) {
+    return false;
+  }
+  const command = params.runtimeContext.command;
+  if (command.stage !== "frontline") {
+    return false;
+  }
+  if (command.stop_after_first_response || params.firstResponseStopRequested) {
+    return false;
+  }
+  if (params.openvikingReceiptPath) {
+    return false;
+  }
+  if (params.promptError != null || params.aborted || params.timedOut) {
+    return false;
+  }
+  return params.reportText.trim().length > 0;
 }
 
 export function prependSingleWorkerProfilePromptToPrompt(
@@ -931,6 +980,9 @@ export function prependSingleWorkerProfilePromptToPrompt(
   }
   const basePrompt = prompt.trim();
   if (!basePrompt) {
+    return renderedProfilePrompt;
+  }
+  if (isSingleWorkerDefaultPrompt(basePrompt)) {
     return renderedProfilePrompt;
   }
   return `${renderedProfilePrompt}\n\n${basePrompt}`;
@@ -1009,7 +1061,7 @@ export function resolveRuntimeWriteReceiptPathForRecord(params: {
   toolName: string;
   resultDetails: Record<string, unknown>;
 }): string | undefined {
-  if (params.toolName !== "openviking.write_material") {
+  if (params.toolName !== "openviking_write_material") {
     return undefined;
   }
   const details = params.resultDetails;
@@ -1025,7 +1077,7 @@ export function resolveRuntimeWriteReceiptPathForRecord(params: {
     (value) => typeof value === "string" && value.trim().length > 0,
   );
   if (typeof receiptPath !== "string" || receiptPath.trim().length === 0) {
-    throw new Error("openviking.write_material result missing receipt_path");
+    throw new Error("openviking_write_material result missing receipt_path");
   }
   return receiptPath.trim();
 }
@@ -1361,6 +1413,9 @@ export async function runEmbeddedAttempt(
         command: runtimeContext.command,
       })
     : undefined;
+  const singleWorkerSystemContextPolicy = resolveSingleWorkerSystemContextPolicy(
+    runtimeContext?.command,
+  );
   const effectiveFsWorkspaceOnly = resolveAttemptFsWorkspaceOnly({
     config: params.config,
     sessionAgentId,
@@ -1469,9 +1524,16 @@ export async function runEmbeddedAttempt(
       params.disableTools || isRawModelRun
         ? []
         : (() => {
+            const runtimeToolAllowlist = runtimeContext
+              ? resolveSingleWorkerToolsAllow({
+                  toolsAllow: params.toolsAllow,
+                  commandAllowedTools: runtimeContext.command.allowed_tools,
+                })
+              : params.toolsAllow;
             const allTools = createOpenClawCodingTools({
               agentId: sessionAgentId,
               ...buildEmbeddedAttemptToolRunContext({ ...params, trace: runTrace }),
+              runtimeToolAllowlist,
               exec: {
                 ...params.execOverrides,
                 elevated: params.bashElevated,
@@ -1495,6 +1557,7 @@ export async function runEmbeddedAttempt(
               allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
               sessionKey: sandboxSessionKey,
               sessionId: params.sessionId,
+              singleWorkerCommand: runtimeContext?.command,
               runId: params.runId,
               agentDir,
               workspaceDir: effectiveWorkspace,
@@ -1517,7 +1580,7 @@ export async function runEmbeddedAttempt(
               currentChannelId: params.currentChannelId,
               currentThreadTs: params.currentThreadTs,
               currentMessageId: params.currentMessageId,
-              includeCoreTools: shouldBuildCoreCodingToolsForAllowlist(params.toolsAllow),
+              includeCoreTools: shouldBuildCoreCodingToolsForAllowlist(runtimeToolAllowlist),
               replyToMode: params.replyToMode,
               hasRepliedRef: params.hasRepliedRef,
               modelHasVision: params.model.input?.includes("image") ?? false,
@@ -1904,43 +1967,49 @@ export async function runEmbeddedAttempt(
         config: params.config,
         agentId: sessionAgentId,
       }) ??
-      buildEmbeddedSystemPrompt({
-        workspaceDir: effectiveWorkspace,
-        defaultThinkLevel: params.thinkLevel,
-        reasoningLevel: params.reasoningLevel ?? "off",
-        extraSystemPrompt: params.extraSystemPrompt,
-        ownerNumbers: params.ownerNumbers,
-        ownerDisplay: ownerDisplay.ownerDisplay,
-        ownerDisplaySecret: ownerDisplay.ownerDisplaySecret,
-        reasoningTagHint,
-        heartbeatPrompt,
-        skillsPrompt: effectiveSkillsPrompt,
-        docsPath: openClawReferences.docsPath ?? undefined,
-        sourcePath: openClawReferences.sourcePath ?? undefined,
-        ttsHint,
-        workspaceNotes: workspaceNotes?.length ? workspaceNotes : undefined,
-        reactionGuidance,
-        promptMode: effectivePromptMode,
-        sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
-        silentReplyPromptMode: params.silentReplyPromptMode,
-        acpEnabled: isAcpRuntimeSpawnAvailable({
-          config: params.config,
-          sandboxed: sandboxInfo?.enabled === true,
-        }),
-        nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance(),
-        runtimeInfo,
-        messageToolHints,
-        sandboxInfo,
-        tools: effectiveTools,
-        modelAliasLines: buildModelAliasLines(params.config),
-        userTimezone,
-        userTime,
-        userTimeFormat,
-        contextFiles,
-        includeMemorySection: !activeContextEngine || activeContextEngine.info.id === "legacy",
-        memoryCitationsMode: params.config?.memory?.citations,
-        promptContribution,
-      });
+      (singleWorkerSystemContextPolicy === "single_worker_minimal" && runtimeContext
+        ? buildSingleWorkerMinimalSystemContext({
+            context: runtimeContext,
+            tools: effectiveTools,
+            workspaceDir: effectiveWorkspace,
+          })
+        : buildEmbeddedSystemPrompt({
+            workspaceDir: effectiveWorkspace,
+            defaultThinkLevel: params.thinkLevel,
+            reasoningLevel: params.reasoningLevel ?? "off",
+            extraSystemPrompt: params.extraSystemPrompt,
+            ownerNumbers: params.ownerNumbers,
+            ownerDisplay: ownerDisplay.ownerDisplay,
+            ownerDisplaySecret: ownerDisplay.ownerDisplaySecret,
+            reasoningTagHint,
+            heartbeatPrompt,
+            skillsPrompt: effectiveSkillsPrompt,
+            docsPath: openClawReferences.docsPath ?? undefined,
+            sourcePath: openClawReferences.sourcePath ?? undefined,
+            ttsHint,
+            workspaceNotes: workspaceNotes?.length ? workspaceNotes : undefined,
+            reactionGuidance,
+            promptMode: effectivePromptMode,
+            sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+            silentReplyPromptMode: params.silentReplyPromptMode,
+            acpEnabled: isAcpRuntimeSpawnAvailable({
+              config: params.config,
+              sandboxed: sandboxInfo?.enabled === true,
+            }),
+            nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance(),
+            runtimeInfo,
+            messageToolHints,
+            sandboxInfo,
+            tools: effectiveTools,
+            modelAliasLines: buildModelAliasLines(params.config),
+            userTimezone,
+            userTime,
+            userTimeFormat,
+            contextFiles,
+            includeMemorySection: !activeContextEngine || activeContextEngine.info.id === "legacy",
+            memoryCitationsMode: params.config?.memory?.citations,
+            promptContribution,
+          }));
     const appendPrompt = isRawModelRun
       ? ""
       : transformProviderSystemPrompt({
@@ -2239,9 +2308,9 @@ export async function runEmbeddedAttempt(
                   ? resolveRuntimeToolCallErrorMessage({ resultDetails })
                   : undefined;
               const action =
-                toolName === "openviking.write_material"
+                toolName === "openviking_write_material"
                   ? "write"
-                  : toolName === "openviking.read_with_capability"
+                  : toolName === "openviking_read_with_capability"
                     ? "read"
                     : "invoke";
               const record: RuntimeToolCallRecord = {
@@ -2261,7 +2330,7 @@ export async function runEmbeddedAttempt(
                 finished_at: new Date().toISOString(),
               };
               if (
-                toolName === "openviking.write_material" &&
+                toolName === "openviking_write_material" &&
                 recordStatus === "success" &&
                 typeof resolvedWriteReceiptPath === "string" &&
                 resolvedWriteReceiptPath.length > 0
@@ -2284,9 +2353,9 @@ export async function runEmbeddedAttempt(
                   ? (toolArgs as Record<string, unknown>)
                   : {};
               const action =
-                toolName === "openviking.write_material"
+                toolName === "openviking_write_material"
                   ? "write"
-                  : toolName === "openviking.read_with_capability"
+                  : toolName === "openviking_read_with_capability"
                     ? "read"
                     : "invoke";
               const record: RuntimeToolCallRecord = {
@@ -4407,10 +4476,36 @@ export async function runEmbeddedAttempt(
           }),
           context: runtimeContext,
         });
+        const reportText = resolveSingleWorkerReportText({
+          currentAttemptAssistant,
+          lastAssistant,
+          assistantTexts,
+        });
         if (!rawOutputPath && !firstResponseStopRequested) {
           rawOutputPath = path.join(runtimeContext.evidenceDir, "raw-output.md");
-          const rawOutput = assistantTexts.length > 0 ? assistantTexts.join("\n\n") : "";
-          await fs.writeFile(rawOutputPath, rawOutput, "utf8");
+          await fs.writeFile(rawOutputPath, reportText, "utf8");
+        }
+        if (
+          shouldSaveRuntimeOpenVikingMaterial({
+            runtimeContext,
+            openvikingReceiptPath,
+            reportText,
+            promptError,
+            aborted,
+            timedOut,
+            firstResponseStopRequested,
+          })
+        ) {
+          try {
+            const saved = await writeOpenVikingMaterialFromRuntime({
+              context: runtimeContext,
+              content: reportText,
+            });
+            openvikingReceiptPath = saved.receiptPath;
+          } catch (err) {
+            promptError = err;
+            promptErrorSource = "prompt";
+          }
         }
       }
       const failureReason =
