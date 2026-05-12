@@ -27,6 +27,7 @@ import {
   resolvePromptModeForSession,
   shouldStripBootstrapFromEmbeddedContext,
   shouldWarnOnOrphanedUserRepair,
+  shouldSaveRuntimeOpenVikingMaterial,
   wrapStreamFnRepairMalformedToolCallArguments,
   wrapStreamFnSanitizeMalformedToolCalls,
   wrapStreamFnTrimToolCallNames,
@@ -193,6 +194,83 @@ describe("shouldCreateBundleMcpRuntimeForAttempt", () => {
         toolsAllow: ["strict__strict_probe"],
       }),
     ).toBe(true);
+  });
+});
+
+describe("shouldSaveRuntimeOpenVikingMaterial", () => {
+  function runtimeContext(stage: string, stopAfterFirstResponse = false) {
+    return {
+      command: {
+        stage,
+        stop_after_first_response: stopAfterFirstResponse,
+      },
+    } as Parameters<typeof shouldSaveRuntimeOpenVikingMaterial>[0]["runtimeContext"];
+  }
+
+  it("saves direct assistant material for later-stage full worker runs", () => {
+    expect(
+      shouldSaveRuntimeOpenVikingMaterial({
+        runtimeContext: runtimeContext("investment_debate"),
+        reportText: "bull report",
+        openvikingReceiptPath: undefined,
+        promptError: null,
+        aborted: false,
+        timedOut: false,
+        firstResponseStopRequested: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not save when the run already produced a receipt or no report text", () => {
+    expect(
+      shouldSaveRuntimeOpenVikingMaterial({
+        runtimeContext: runtimeContext("frontline"),
+        reportText: "market report",
+        openvikingReceiptPath: "/tmp/openviking-write-receipt.json",
+        promptError: null,
+        aborted: false,
+        timedOut: false,
+        firstResponseStopRequested: false,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldSaveRuntimeOpenVikingMaterial({
+        runtimeContext: runtimeContext("investment_debate"),
+        reportText: "   ",
+        openvikingReceiptPath: undefined,
+        promptError: null,
+        aborted: false,
+        timedOut: false,
+        firstResponseStopRequested: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not save first-response or failed/interrupted runs", () => {
+    expect(
+      shouldSaveRuntimeOpenVikingMaterial({
+        runtimeContext: runtimeContext("investment_debate", true),
+        reportText: "draft",
+        openvikingReceiptPath: undefined,
+        promptError: null,
+        aborted: false,
+        timedOut: false,
+        firstResponseStopRequested: false,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldSaveRuntimeOpenVikingMaterial({
+        runtimeContext: runtimeContext("investment_debate"),
+        reportText: "draft",
+        openvikingReceiptPath: undefined,
+        promptError: new Error("provider failed"),
+        aborted: false,
+        timedOut: false,
+        firstResponseStopRequested: false,
+      }),
+    ).toBe(false);
   });
 });
 

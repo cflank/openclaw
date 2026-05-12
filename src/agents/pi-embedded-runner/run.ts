@@ -312,9 +312,6 @@ export async function runEmbeddedPiAgent(
     if (singleWorkerCommand.agent !== singleWorkerCommand.worker_id) {
       throw new Error("singleWorkerCommand.agent must equal worker_id");
     }
-    if (singleWorkerCommand.allowed_tools.length === 0) {
-      throw new Error("singleWorkerCommand.allowed_tools must not be empty");
-    }
     await ensureEvidenceDir(singleWorkerCommand);
     createRuntimeContext({
       command: singleWorkerCommand,

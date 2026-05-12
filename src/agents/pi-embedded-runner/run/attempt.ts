@@ -939,7 +939,7 @@ function resolveSingleWorkerReportText(params: {
   return params.assistantTexts.join("\n\n").trim();
 }
 
-function shouldSaveRuntimeOpenVikingMaterial(params: {
+export function shouldSaveRuntimeOpenVikingMaterial(params: {
   runtimeContext?: RuntimeContext;
   openvikingReceiptPath?: string;
   reportText: string;
@@ -952,9 +952,6 @@ function shouldSaveRuntimeOpenVikingMaterial(params: {
     return false;
   }
   const command = params.runtimeContext.command;
-  if (command.stage !== "frontline") {
-    return false;
-  }
   if (command.stop_after_first_response || params.firstResponseStopRequested) {
     return false;
   }

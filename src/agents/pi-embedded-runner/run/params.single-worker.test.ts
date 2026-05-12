@@ -10,6 +10,7 @@ import {
   resolveSingleWorkerProfilePrompt,
   renderOpenVikingMaterialBrief,
   resolveSingleWorkerSystemContextPolicy,
+  stripPromptFrontMatter,
   withRuntimeMarkers,
   writeWorkspaceEvidence,
   type SingleWorkerCommand,
@@ -158,7 +159,7 @@ describe("single-worker runtime context", () => {
     expect(brief).not.toContain("上游正文");
   });
 
-  it("appends only upstream material brief into prompt exactly once", () => {
+  it("strips stale material brief instead of appending runtime refs into prompt", () => {
     const command = buildCommand("/tmp/evidence");
     command.upstream_materials = [
       {
@@ -174,7 +175,8 @@ describe("single-worker runtime context", () => {
       },
     ];
     const appended = appendOpenVikingMaterialBrief("原始提示词", command);
-    expect(appended).toContain("[ApprovedMaterials]");
+    expect(appended).toBe("原始提示词");
+    expect(appended).not.toContain("[ApprovedMaterials]");
     expect(appended).not.toContain("[RuntimeTarget]");
     expect(appended).not.toContain("[ReportSubmission]");
     expect(appended).not.toContain("ticker=AAPL");
@@ -222,7 +224,7 @@ describe("single-worker runtime context", () => {
     expect(appended).not.toContain("material_id=legacy");
     expect(appended).not.toContain("viking://legacy/uri.md");
     expect(appended).not.toContain("ticker=AAPL");
-    expect(appended).toContain("material_id=mat-new");
+    expect(appended).not.toContain("material_id=mat-new");
     expect(appended).not.toContain("visible report-writing tool");
     expect(appended).not.toContain("[ReportSubmission]");
     expect(appended).not.toContain("write_tool_args=");
@@ -292,6 +294,33 @@ describe("single-worker runtime context", () => {
     expect(resolved.prompt).toContain("Date=2026-05-03");
     expect(resolved.prompt).not.toContain("{ticker}");
     expect(resolved.promptTemplatePath.endsWith("/prompts/US.md")).toBe(true);
+  });
+
+  it("strips prompt front matter before rendering provider-visible prompt", () => {
+    const rendered = renderSingleWorkerPromptTemplate(
+      [
+        "---",
+        "profile: CN_A",
+        "profile_status: approved",
+        "worker_id: bear_researcher",
+        "stage: investment_debate",
+        "---",
+        "",
+        "你是一位看跌分析师，负责论证不投资股票 {company_name}（股票代码：{ticker}）的理由。",
+      ].join("\n"),
+      {
+        company_name: "贵州茅台",
+        ticker: "600519",
+      },
+    );
+
+    expect(rendered.startsWith("你是一位看跌分析师")).toBe(true);
+    expect(rendered).not.toContain("profile:");
+    expect(rendered).not.toContain("worker_id:");
+  });
+
+  it("does not strip markdown rules unless they are opening front matter", () => {
+    expect(stripPromptFrontMatter("正文\n---\n分隔线")).toBe("正文\n---\n分隔线");
   });
 
   it("fails when runtime vars are missing for prompt placeholders", () => {

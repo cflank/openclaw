@@ -122,7 +122,7 @@ describe("single-worker evidence helpers", () => {
     expect(serialized).toContain('"stage":"frontline"');
   });
 
-  it("preserves material brief in final payload when prompt submission appends upstream materials", async () => {
+  it("does not leak material refs into final payload prompt", async () => {
     const context = createRuntimeContext({
       command: {
         ...makeCommand("/tmp/evidence"),
@@ -149,7 +149,7 @@ describe("single-worker evidence helpers", () => {
       "Ticker=AAPL Company=Apple Currency=USD Date=2026-05-03",
     );
     const promptWithBrief = appendSingleWorkerMaterialBriefToPrompt(promptWithProfile, context);
-    expect(promptWithBrief).toContain("[ApprovedMaterials]");
+    expect(promptWithBrief).not.toContain("[ApprovedMaterials]");
     const resolved = await resolveProviderPayloadForCapture({
       payload: { messages: [{ role: "user", content: "old prompt" }] },
       providerModel: { provider: "openai" },
@@ -161,8 +161,8 @@ describe("single-worker evidence helpers", () => {
       (resolved as { messages?: Array<{ content?: string }> }).messages ?? [];
     expect(capturedMessages[0]?.content).toContain("Ticker=AAPL");
     expect(capturedMessages[0]?.content).not.toContain("{ticker}");
-    expect(capturedMessages[0]?.content).toContain("[ApprovedMaterials]");
-    expect(capturedMessages[0]?.content).toContain("material_id=mat-1");
+    expect(capturedMessages[0]?.content).not.toContain("[ApprovedMaterials]");
+    expect(capturedMessages[0]?.content).not.toContain("material_id=mat-1");
     expect(capturedMessages[0]?.content).not.toContain("上游正文");
   });
 

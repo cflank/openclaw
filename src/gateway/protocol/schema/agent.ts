@@ -266,7 +266,7 @@ export const SingleWorkerCommandSchema = Type.Object(
     run_id: NonEmptyString,
     call_id: NonEmptyString,
     runtime_vars: Type.Record(Type.String(), Type.String()),
-    allowed_tools: Type.Array(NonEmptyString, { minItems: 1 }),
+    allowed_tools: Type.Array(NonEmptyString),
     upstream_materials: Type.Array(SingleWorkerMaterialReadRefSchema),
     openviking_read_capabilities: Type.Array(SingleWorkerReadCapabilitySchema),
     material_target: SingleWorkerMaterialTargetSchema,

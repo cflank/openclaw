@@ -433,8 +433,9 @@ export function renderSingleWorkerPromptTemplate(
   template: string,
   runtimeVars: Record<string, string>,
 ): string {
+  const promptBody = stripPromptFrontMatter(template);
   const missingVars = new Set<string>();
-  const rendered = template.replaceAll(RUNTIME_PLACEHOLDER_PATTERN, (full, varName: string) => {
+  const rendered = promptBody.replaceAll(RUNTIME_PLACEHOLDER_PATTERN, (full, varName: string) => {
     const value = runtimeVars[varName];
     if (typeof value !== "string") {
       missingVars.add(varName);
@@ -455,6 +456,21 @@ export function renderSingleWorkerPromptTemplate(
     );
   }
   return rendered;
+}
+
+export function stripPromptFrontMatter(template: string): string {
+  const lines = template.split(/\r?\n/g);
+  if (lines[0]?.trim() !== "---") {
+    return template;
+  }
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+  if (end < 0) {
+    return template;
+  }
+  return lines
+    .slice(end + 1)
+    .join("\n")
+    .replace(/^\s*\n/, "");
 }
 
 export async function resolveSingleWorkerProfilePrompt(params: {
@@ -587,19 +603,9 @@ export function appendOpenVikingMaterialBrief(
   prompt: string,
   command: SingleWorkerCommand,
 ): string {
-  // 只在确有上游材料时追加材料目录；运行目标和提交要求由 profile prompt 自己表达。
-  const base = stripRuntimeSections(prompt.trimEnd());
-  const appendSections: string[] = [];
-  if (command.upstream_materials.length > 0) {
-    appendSections.push(renderOpenVikingMaterialBrief(command));
-  }
-  if (appendSections.length === 0) {
-    return base;
-  }
-  if (!base) {
-    return appendSections.join("\n\n");
-  }
-  return `${base}\n\n${appendSections.join("\n\n")}`;
+  void command;
+  // worker prompt 只保留 CN/原版业务正文；材料 refs/hash/capability 只写证据层。
+  return stripRuntimeSections(prompt.trimEnd());
 }
 
 function stripRuntimeSections(text: string): string {

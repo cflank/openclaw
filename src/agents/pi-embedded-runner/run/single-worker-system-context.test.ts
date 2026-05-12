@@ -86,8 +86,9 @@ describe("single worker system context policy", () => {
       workspaceDir: "/tmp/openclaw/agents/market_analyst",
     });
 
-    expect(prompt).toContain("你正在执行当前分析师的一轮任务。");
-    expect(prompt).toContain("请按用户消息中的角色、工具和报告格式要求完成本轮分析。");
+    expect(prompt).toBe("");
+    expect(prompt).not.toContain("你正在执行当前分析师的一轮任务。");
+    expect(prompt).not.toContain("请按用户消息中的角色、工具和报告格式要求完成本轮分析。");
     expect(prompt).not.toContain("worker=market_analyst | stage=frontline | profile=CN_A");
     expect(prompt).not.toContain("openclaw_run_id=openclaw-run-1 | run_id=run-1 | call_id=call-1");
     expect(prompt).not.toContain("## Report Submission");

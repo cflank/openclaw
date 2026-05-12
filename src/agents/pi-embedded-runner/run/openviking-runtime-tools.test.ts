@@ -190,7 +190,7 @@ describe("single-worker runtime tool preparation", () => {
     expect(Object.keys(properties).sort()).toEqual(["layer", "material_id"]);
   });
 
-  it("appends upstream material brief into prompt when runtimeContext exists", () => {
+  it("keeps upstream material refs out of prompt when runtimeContext exists", () => {
     const command = makeCommand(["openviking_read_with_capability"]);
     command.upstream_materials = [
       {
@@ -210,18 +210,18 @@ describe("single-worker runtime tool preparation", () => {
       openclawRunId: "oc-run-3",
     });
     const prompt = appendSingleWorkerMaterialBriefToPrompt("原始提示词", runtimeContext);
-    expect(prompt).toContain("[ApprovedMaterials]");
+    expect(prompt).toBe("原始提示词");
+    expect(prompt).not.toContain("[ApprovedMaterials]");
     expect(prompt).not.toContain("[ReportSubmission]");
     expect(prompt).not.toContain("visible report-writing tool");
     expect(prompt).not.toContain(
       "uri=viking://resources/workflow/run-1/frontline/market_analyst/call-1/report.md",
     );
     expect(prompt).not.toContain("target_name=report");
-    expect(prompt).toContain("material_id=mat-1");
-    expect(prompt).toContain("recommended_read=material_id+layer(L1)");
-    expect(prompt).toContain("layer=L1");
-    expect(prompt).toContain("l1_sha256=abc123");
-    expect(prompt).toContain("l1_sha256=abc123");
+    expect(prompt).not.toContain("material_id=mat-1");
+    expect(prompt).not.toContain("recommended_read=material_id+layer(L1)");
+    expect(prompt).not.toContain("layer=L1");
+    expect(prompt).not.toContain("l1_sha256=abc123");
     expect(prompt).not.toContain("上游正文");
   });
 
