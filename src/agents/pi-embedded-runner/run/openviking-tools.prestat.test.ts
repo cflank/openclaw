@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import JSZip from "jszip";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerOpenVikingTools } from "./openviking-tools.js";
 import { createRuntimeContext, type SingleWorkerCommand } from "./params.js";
@@ -80,6 +81,7 @@ type Step = {
   path: string;
   response?: Response;
   error?: Error;
+  assertInit?: (init: RequestInit | undefined) => void | Promise<void>;
 };
 
 function installFetchPlan(steps: Step[], options?: { allowUnusedSteps?: boolean }): () => void {
@@ -95,6 +97,7 @@ function installFetchPlan(steps: Step[], options?: { allowUnusedSteps?: boolean 
     }
     expect(method).toBe(next.method.toUpperCase());
     expect(url).toContain(next.path);
+    await next.assertInit?.(init);
     if (next.error) {
       throw next.error;
     }
@@ -110,6 +113,29 @@ function installFetchPlan(steps: Step[], options?: { allowUnusedSteps?: boolean 
       expect(remaining).toHaveLength(0);
     }
   };
+}
+
+async function expectOvpackUpload(
+  init: RequestInit | undefined,
+  params: {
+    callId: string;
+    relativePath: string;
+    content: string;
+    metaUri: string;
+  },
+): Promise<void> {
+  expect(init?.body).toBeInstanceOf(FormData);
+  const file = (init?.body as FormData).get("file");
+  expect(file).toBeInstanceOf(Blob);
+  const fileName = "name" in (file as object) ? String((file as { name?: unknown }).name) : "";
+  expect(fileName).toMatch(/\.ovpack$/);
+  const zip = await JSZip.loadAsync(Buffer.from(await (file as Blob).arrayBuffer()));
+  const meta = zip.file(`${params.callId}/_._meta.json`);
+  const content = zip.file(`${params.callId}/${params.relativePath}`);
+  expect(meta).toBeTruthy();
+  expect(content).toBeTruthy();
+  expect(await meta!.async("string")).toBe(JSON.stringify({ uri: params.metaUri }));
+  expect(await content!.async("string")).toBe(params.content);
 }
 
 describe("openviking write import-path compat", () => {
@@ -132,6 +158,13 @@ describe("openviking write import-path compat", () => {
       {
         method: "POST",
         path: "/api/v1/resources/temp_upload",
+        assertInit: (init) =>
+          expectOvpackUpload(init, {
+            callId: "call-1",
+            relativePath: "report.md",
+            content: "hello",
+            metaUri: "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1",
+          }),
         response: new Response(
           JSON.stringify({ status: "ok", result: { temp_file_id: "tmp-l1" } }),
           { status: 200 },
@@ -172,6 +205,13 @@ describe("openviking write import-path compat", () => {
       {
         method: "POST",
         path: "/api/v1/resources/temp_upload",
+        assertInit: (init) =>
+          expectOvpackUpload(init, {
+            callId: "call-1",
+            relativePath: "evidence/index.json",
+            content: l2IndexContent,
+            metaUri: "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1",
+          }),
         response: new Response(
           JSON.stringify({ status: "ok", result: { temp_file_id: "tmp-l2" } }),
           { status: 200 },

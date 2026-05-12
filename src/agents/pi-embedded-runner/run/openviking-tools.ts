@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import JSZip from "jszip";
@@ -12,6 +13,9 @@ const OPENVIKING_WRITE_RETRY_LIMIT = 6;
 const OPENVIKING_L2_INDEX_WRITE_RETRY_LIMIT = 10;
 const OPENVIKING_WRITE_RETRY_BASE_DELAY_MS = 200;
 const OPENVIKING_WRITE_RETRY_MAX_DELAY_MS = 2000;
+const OPENVIKING_WRITE_LOCK_TIMEOUT_MS = 600_000;
+const OPENVIKING_WRITE_LOCK_STALE_MS = 1_800_000;
+const OPENVIKING_WRITE_LOCK_POLL_MS = 100;
 // PM 只能在这个小枚举里给最终评级，避免模型临时造出 HOLD/OBSERVATION 这类不可机读值。
 const PM_ALLOWED_RATINGS = ["buy", "hold", "sell", "neutral", "not_rated"] as const;
 
@@ -123,6 +127,115 @@ function resolveBaseUrl(options?: OpenVikingToolOptions): string {
   return candidate.trim().replace(/\/+$/, "");
 }
 
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveOpenVikingWriteLockPath(baseUrl: string): string {
+  const configured = process.env.OPENVIKING_WRITE_LOCK_PATH?.trim();
+  if (configured) {
+    return path.resolve(configured);
+  }
+  const suffix = crypto.createHash("sha256").update(baseUrl).digest("hex").slice(0, 16);
+  return path.join(os.tmpdir(), `openviking-write-${suffix}.lock`);
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  }
+  return undefined;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeStaleOpenVikingWriteLock(lockPath: string, staleMs: number): Promise<void> {
+  try {
+    const stat = await fs.stat(lockPath);
+    if (Date.now() - stat.mtimeMs < staleMs) {
+      return;
+    }
+    await fs.unlink(lockPath);
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function acquireOpenVikingWriteLock(baseUrl: string): Promise<() => Promise<void>> {
+  const lockPath = resolveOpenVikingWriteLockPath(baseUrl);
+  const owner = `${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
+  const timeoutMs = readPositiveIntegerEnv(
+    "OPENVIKING_WRITE_LOCK_TIMEOUT_MS",
+    OPENVIKING_WRITE_LOCK_TIMEOUT_MS,
+  );
+  const staleMs = readPositiveIntegerEnv(
+    "OPENVIKING_WRITE_LOCK_STALE_MS",
+    OPENVIKING_WRITE_LOCK_STALE_MS,
+  );
+  const pollMs = readPositiveIntegerEnv(
+    "OPENVIKING_WRITE_LOCK_POLL_MS",
+    OPENVIKING_WRITE_LOCK_POLL_MS,
+  );
+  const deadline = Date.now() + timeoutMs;
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+
+  while (true) {
+    try {
+      await fs.writeFile(
+        lockPath,
+        `${JSON.stringify({
+          owner,
+          pid: process.pid,
+          base_url: baseUrl,
+          acquired_at: new Date().toISOString(),
+        })}\n`,
+        { encoding: "utf8", flag: "wx" },
+      );
+      return async () => {
+        try {
+          const raw = await fs.readFile(lockPath, "utf8");
+          const parsed = JSON.parse(raw) as { owner?: unknown };
+          if (parsed.owner === owner) {
+            await fs.unlink(lockPath);
+          }
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT") {
+            throw error;
+          }
+        }
+      };
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") {
+        throw error;
+      }
+      await removeStaleOpenVikingWriteLock(lockPath, staleMs);
+      if (Date.now() >= deadline) {
+        throw new Error(`OpenViking write lock timeout: ${lockPath}`);
+      }
+      await sleepMs(pollMs);
+    }
+  }
+}
+
+async function withOpenVikingWriteLock<T>(baseUrl: string, callback: () => Promise<T>): Promise<T> {
+  const release = await acquireOpenVikingWriteLock(baseUrl);
+  try {
+    return await callback();
+  } finally {
+    await release();
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -185,15 +298,6 @@ function detectTargetName(uri: string): string {
     throw new Error(`invalid OpenViking file uri: ${uri}`);
   }
   return targetName;
-}
-
-function detectParentUri(uri: string): string {
-  const normalized = uri.replace(/\/+$/, "");
-  const cut = normalized.lastIndexOf("/");
-  if (cut <= "viking://".length) {
-    throw new Error(`invalid OpenViking file uri: ${uri}`);
-  }
-  return normalized.slice(0, cut);
 }
 
 function encodeQueryUri(uri: string): string {
@@ -560,6 +664,47 @@ function resolveL2IndexUri(l2PrefixRaw: string): string {
   return `${normalizedPrefix}index.json`;
 }
 
+function parsePackImportTarget(uri: string): {
+  parentUri: string;
+  callId: string;
+  relativePath: string;
+} {
+  const prefix = "viking://resources/workflow/";
+  if (!uri.startsWith(prefix)) {
+    throw new Error(`invalid OpenViking workflow uri: ${uri}`);
+  }
+  const parts = uri.slice(prefix.length).split("/");
+  if (parts.length < 5) {
+    throw new Error(`OpenViking workflow uri has too few parts: ${uri}`);
+  }
+  const [runId, stage, workerId, callId, ...relativeParts] = parts;
+  if (!runId || !stage || !workerId || !callId || relativeParts.some((part) => !part)) {
+    throw new Error(`OpenViking workflow uri is missing identity fields: ${uri}`);
+  }
+  return {
+    parentUri: `viking://resources/workflow/${runId}/${stage}/${workerId}`,
+    callId,
+    relativePath: relativeParts.join("/"),
+  };
+}
+
+async function buildSingleFileOvpack(params: {
+  uri: string;
+  content: string;
+}): Promise<{ parentUri: string; bytes: Uint8Array }> {
+  const { parentUri, callId, relativePath } = parsePackImportTarget(params.uri);
+  const metaUri = `${parentUri}/${callId}`;
+  const zip = new JSZip();
+  zip.file(`${callId}/`, "");
+  zip.file(`${callId}/_._meta.json`, JSON.stringify({ uri: metaUri }));
+  zip.file(`${callId}/${relativePath}`, params.content);
+  const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+  return {
+    parentUri,
+    bytes: Uint8Array.from(zipBuffer),
+  };
+}
+
 function buildEmptyL2IndexContent(context: RuntimeContext): string {
   return `${JSON.stringify(
     {
@@ -589,13 +734,13 @@ async function writeAndVerifyOpenVikingFile(params: {
   const expectedSha = sha256OfUtf8(expectedNormalized);
   const expectedSize = Buffer.byteLength(expectedNormalized, "utf8");
   const targetName = detectTargetName(params.uri);
-  const parentUri = detectParentUri(params.uri);
-  const zip = new JSZip();
-  zip.file(targetName, params.content);
-  const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
-  const zipBytes = Uint8Array.from(zipBuffer);
+  const ovpack = await buildSingleFileOvpack({ uri: params.uri, content: params.content });
   const form = new FormData();
-  form.append("file", new Blob([zipBytes], { type: "application/zip" }), `${targetName}.zip`);
+  form.append(
+    "file",
+    new Blob([ovpack.bytes], { type: "application/octet-stream" }),
+    `seed-${crypto.randomUUID()}.ovpack`,
+  );
   const uploadResult = await requestOpenViking<{ temp_file_id?: string }>({
     baseUrl: params.baseUrl,
     endpoint: "/api/v1/resources/temp_upload",
@@ -616,7 +761,7 @@ async function writeAndVerifyOpenVikingFile(params: {
     httpOperations: params.httpOperations,
     body: JSON.stringify({
       temp_file_id: tempFileId,
-      parent: parentUri,
+      parent: ovpack.parentUri,
       force: true,
       vectorize: false,
     }),
@@ -1165,21 +1310,24 @@ export function registerOpenVikingTools(
       const content = contentRaw;
       const httpOperations: OpenVikingHttpOperation[] = [];
       // 写后立刻 stat/read/download 校验，receipt 只是这组真实调用的审计记录，不是假成功凭证。
-      const l1WriteResult = await writeAndVerifyWithRetry({
-        baseUrl,
-        uri: targetUri,
-        content,
-        httpOperations,
-      });
-      const l2IndexUri = resolveL2IndexUri(context.command.material_target.l2_prefix);
-      const emptyL2IndexContent = buildEmptyL2IndexContent(context);
-      await writeAndVerifyWithRetry({
-        baseUrl,
-        uri: l2IndexUri,
-        content: emptyL2IndexContent,
-        httpOperations,
-        operationSuffix: ".l2_index",
-        retryLimit: OPENVIKING_L2_INDEX_WRITE_RETRY_LIMIT,
+      const l1WriteResult = await withOpenVikingWriteLock(baseUrl, async () => {
+        const result = await writeAndVerifyWithRetry({
+          baseUrl,
+          uri: targetUri,
+          content,
+          httpOperations,
+        });
+        const l2IndexUri = resolveL2IndexUri(context.command.material_target.l2_prefix);
+        const emptyL2IndexContent = buildEmptyL2IndexContent(context);
+        await writeAndVerifyWithRetry({
+          baseUrl,
+          uri: l2IndexUri,
+          content: emptyL2IndexContent,
+          httpOperations,
+          operationSuffix: ".l2_index",
+          retryLimit: OPENVIKING_L2_INDEX_WRITE_RETRY_LIMIT,
+        });
+        return result;
       });
 
       const receiptPath = await writeReceipt({
