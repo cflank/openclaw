@@ -145,6 +145,42 @@ describe("gateway-cli coverage", () => {
     expect(runtimeLogs.join("\n")).toContain('"ok": true');
   });
 
+  it("reads gateway call params from a file", async () => {
+    callGateway.mockClear();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-cli-params-"));
+    const paramsPath = path.join(tempDir, "params.json");
+    fs.writeFileSync(paramsPath, JSON.stringify({ x: 1, nested: { y: "z" } }), "utf8");
+
+    await runGatewayCommand(["gateway", "call", "health", "--params-file", paramsPath, "--json"]);
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "health",
+        params: { x: 1, nested: { y: "z" } },
+      }),
+    );
+  });
+
+  it("rejects gateway call params from both inline JSON and file", async () => {
+    callGateway.mockClear();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-cli-params-"));
+    const paramsPath = path.join(tempDir, "params.json");
+    fs.writeFileSync(paramsPath, JSON.stringify({ x: 1 }), "utf8");
+
+    await expectGatewayExit([
+      "gateway",
+      "call",
+      "health",
+      "--params",
+      '{"y":2}',
+      "--params-file",
+      paramsPath,
+    ]);
+
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(runtimeErrors.join("\n")).toContain("Use either --params or --params-file");
+  });
+
   it("registers gateway probe and routes to gatewayStatusCommand", async () => {
     gatewayStatusCommand.mockClear();
 

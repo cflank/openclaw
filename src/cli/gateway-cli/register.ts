@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Command } from "commander";
 import type { HealthSummary } from "../../commands/health.js";
 import type { CostUsageSummary } from "../../infra/session-cost-usage.js";
@@ -116,6 +117,23 @@ function parseDaysOption(raw: unknown, fallback = 30): number {
     }
   }
   return fallback;
+}
+
+function parseGatewayCallParams(
+  opts: { params?: unknown; paramsFile?: unknown },
+  command: Command,
+) {
+  const paramsFile =
+    typeof opts.paramsFile === "string" && opts.paramsFile.trim() !== ""
+      ? opts.paramsFile.trim()
+      : undefined;
+  if (paramsFile) {
+    if (command.getOptionValueSource("params") === "cli") {
+      throw new Error("Use either --params or --params-file, not both.");
+    }
+    return JSON.parse(readFileSync(paramsFile, "utf8"));
+  }
+  return JSON.parse(String(opts.params ?? "{}"));
 }
 
 function resolveGatewayRpcOptions<T extends { token?: string; password?: string }>(
@@ -413,10 +431,11 @@ export function registerGatewayCli(program: Command) {
       .description("Call a Gateway method")
       .argument("<method>", "Method name (health/status/system-presence/cron.*)")
       .option("--params <json>", "JSON object string for params", "{}")
+      .option("--params-file <path>", "Read JSON object params from a file")
       .action(async (method, opts, command) => {
         await runGatewayCommand(async () => {
           const rpcOpts = resolveGatewayRpcOptions(opts, command);
-          const params = JSON.parse(String(opts.params ?? "{}"));
+          const params = parseGatewayCallParams(opts, command);
           const result = await callGatewayCli(method, rpcOpts, params);
           if (rpcOpts.json) {
             defaultRuntime.writeJson(result);
