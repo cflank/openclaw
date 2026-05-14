@@ -724,31 +724,4 @@ describe("openviking write import-path compat", () => {
       cleanupFetch();
     }
   });
-
-  it("rejects pm_decision for non-portfolio worker before OpenViking HTTP", async () => {
-    const evidenceDir = await makeTempDir("openviking-import-pm-decision-scope-");
-    const targetUri =
-      "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1/report.md";
-    const l2Prefix =
-      "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1/evidence/";
-    const command = buildCommand({ evidenceDir, targetUri, l2Prefix });
-    const context = createRuntimeContext({ command, openclawRunId: "oc-import-pm-decision-scope" });
-    const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
-      (item) => item.name === "openviking_write_material",
-    );
-    expect(writeTool).toBeDefined();
-    await expect(
-      writeTool!.execute("tool-call-pm-scope", {
-        uri: targetUri,
-        content: "analysis body",
-        pm_decision: {
-          rating: "buy",
-          final_conclusion: "x",
-          execution_conditions: ["y"],
-          risk_conditions: ["z"],
-          source_claim_ids: [],
-        },
-      }),
-    ).rejects.toThrow(/portfolio_manager@portfolio_decision/i);
-  });
 });

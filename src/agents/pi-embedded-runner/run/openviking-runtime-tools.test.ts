@@ -117,7 +117,7 @@ describe("single-worker runtime tool preparation", () => {
     expect(prepared.map((tool) => tool.name)).toEqual(["openviking_read_with_capability"]);
   });
 
-  it("hides pm_decision from non-PM write_material schema", () => {
+  it("uses content-only write_material schema for non-PM workers", () => {
     const runtimeContext = createRuntimeContext({
       command: makeCommand(["openviking_write_material"]),
       openclawRunId: "oc-run-pm-schema-non-pm",
@@ -130,11 +130,10 @@ describe("single-worker runtime tool preparation", () => {
     const writeTool = prepared.find((tool) => tool.name === "openviking_write_material");
     expect(writeTool).toBeDefined();
     const properties = readToolSchemaProperties(writeTool);
-    expect(Object.prototype.hasOwnProperty.call(properties, "pm_decision")).toBe(false);
     expect(Object.keys(properties)).toEqual(["content"]);
   });
 
-  it("keeps pm_decision in PM write_material schema", () => {
+  it("uses content-only write_material schema for PM workers", () => {
     const command = makeCommand(["openviking_write_material"]);
     command.agent = "portfolio_manager";
     command.worker_id = "portfolio_manager";
@@ -158,20 +157,7 @@ describe("single-worker runtime tool preparation", () => {
     const writeTool = prepared.find((tool) => tool.name === "openviking_write_material");
     expect(writeTool).toBeDefined();
     const properties = readToolSchemaProperties(writeTool);
-    expect(Object.prototype.hasOwnProperty.call(properties, "pm_decision")).toBe(true);
-    expect(Object.keys(properties).sort()).toEqual(["content", "pm_decision"]);
-    const pmDecisionSchema = readSchemaObjectProperty(properties, "pm_decision");
-    const pmDecisionProperties = readSchemaObjectProperty(pmDecisionSchema, "properties");
-    const ratingSchema = readSchemaObjectProperty(pmDecisionProperties, "rating");
-    const ratingAnyOf = Array.isArray(ratingSchema.anyOf) ? ratingSchema.anyOf : [];
-    const ratingEnum = ratingAnyOf
-      .map((item) =>
-        item && typeof item === "object" && !Array.isArray(item)
-          ? (item as Record<string, unknown>).const
-          : undefined,
-      )
-      .filter((item): item is string => typeof item === "string");
-    expect(ratingEnum).toEqual(["buy", "hold", "sell", "neutral", "not_rated"]);
+    expect(Object.keys(properties)).toEqual(["content"]);
   });
 
   it("narrows read_with_capability model-visible schema to material_id + layer", () => {

@@ -16,8 +16,6 @@ const OPENVIKING_WRITE_RETRY_MAX_DELAY_MS = 2000;
 const OPENVIKING_WRITE_LOCK_TIMEOUT_MS = 600_000;
 const OPENVIKING_WRITE_LOCK_STALE_MS = 1_800_000;
 const OPENVIKING_WRITE_LOCK_POLL_MS = 100;
-// PM 只能在这个小枚举里给最终评级，避免模型临时造出 HOLD/OBSERVATION 这类不可机读值。
-const PM_ALLOWED_RATINGS = ["buy", "hold", "sell", "neutral", "not_rated"] as const;
 
 type OpenVikingToolOptions = {
   baseUrl?: string;
@@ -61,28 +59,9 @@ class OpenVikingHttpError extends Error {
   }
 }
 
-const PM_DECISION_PARAMETERS = Type.Object(
-  {
-    rating: Type.Union(PM_ALLOWED_RATINGS.map((value) => Type.Literal(value))),
-    final_conclusion: Type.String(),
-    execution_conditions: Type.Array(Type.String()),
-    risk_conditions: Type.Array(Type.String()),
-    source_claim_ids: Type.Optional(Type.Array(Type.String())),
-  },
-  { additionalProperties: false },
-);
-
 const WRITE_MATERIAL_BASE_PARAMETERS = Type.Object(
   {
     content: Type.Optional(Type.String()),
-  },
-  { additionalProperties: false },
-);
-
-const WRITE_MATERIAL_PM_PARAMETERS = Type.Object(
-  {
-    content: Type.Optional(Type.String()),
-    pm_decision: Type.Optional(PM_DECISION_PARAMETERS),
   },
   { additionalProperties: false },
 );
@@ -111,14 +90,6 @@ type MaterialClaimsPayload = {
   material_layer: "L1";
   source_kind: "worker_report";
   claims: unknown[];
-};
-
-type PmDecisionInput = {
-  rating: string;
-  final_conclusion: string;
-  execution_conditions: string[];
-  risk_conditions: string[];
-  source_claim_ids: string[];
 };
 
 function resolveBaseUrl(options?: OpenVikingToolOptions): string {
@@ -265,15 +236,6 @@ function resolveEvidencePath(context: RuntimeContext, fileName: string): string 
 function containsForbiddenStructuredBlock(content: string): string | null {
   if (/control\.claims\.v1/i.test(content)) {
     return "content contains reserved schema marker control.claims.v1";
-  }
-  if (/```[\w-]*\s*pm[_-]?decision[\s\S]*?```/i.test(content)) {
-    return "content contains fenced PM decision block";
-  }
-  if (
-    /```[\s\S]*?rating[\s\S]*?final_conclusion[\s\S]*?```/i.test(content) ||
-    /```[\s\S]*?final_conclusion[\s\S]*?rating[\s\S]*?```/i.test(content)
-  ) {
-    return "content contains fenced PM decision fields";
   }
   return null;
 }
@@ -1039,88 +1001,6 @@ export async function writeOpenVikingMaterialFromRuntime(params: {
   };
 }
 
-function parsePmDecision(args: Record<string, unknown>): PmDecisionInput | undefined {
-  // PM 决策走结构化参数，不再让模型把 rating/final_conclusion 拼在正文里等 Python 猜。
-  if (!Object.prototype.hasOwnProperty.call(args, "pm_decision")) {
-    return undefined;
-  }
-  const raw = args.pm_decision;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("openviking_write_material pm_decision must be an object");
-  }
-  const pm = raw as Record<string, unknown>;
-  const sourceClaimIdsRaw = pm.source_claim_ids;
-  if (sourceClaimIdsRaw !== undefined && !Array.isArray(sourceClaimIdsRaw)) {
-    throw new Error("openviking_write_material pm_decision.source_claim_ids must be an array");
-  }
-  const sourceClaimIds = Array.isArray(sourceClaimIdsRaw)
-    ? sourceClaimIdsRaw.map((item) => {
-        if (typeof item !== "string") {
-          throw new Error(
-            "openviking_write_material pm_decision.source_claim_ids item must be string",
-          );
-        }
-        return item;
-      })
-    : [];
-  const readPmField = (field: string): string => {
-    const value = pm[field];
-    if (typeof value !== "string" || value.trim().length === 0) {
-      throw new Error(`openviking_write_material pm_decision.${field} must be non-empty`);
-    }
-    return value;
-  };
-  const readPmStringArrayField = (field: string): string[] => {
-    const value = pm[field];
-    if (!Array.isArray(value)) {
-      throw new Error(`openviking_write_material pm_decision.${field} must be an array`);
-    }
-    return value.map((item) => {
-      if (typeof item !== "string" || item.trim().length === 0) {
-        throw new Error(
-          `openviking_write_material pm_decision.${field} item must be non-empty string`,
-        );
-      }
-      return item;
-    });
-  };
-  return {
-    rating: (() => {
-      const rating = readPmField("rating");
-      if (!PM_ALLOWED_RATINGS.includes(rating as (typeof PM_ALLOWED_RATINGS)[number])) {
-        throw new Error(
-          `openviking_write_material pm_decision.rating must be one of: ${PM_ALLOWED_RATINGS.join(", ")}`,
-        );
-      }
-      return rating;
-    })(),
-    final_conclusion: readPmField("final_conclusion"),
-    execution_conditions: readPmStringArrayField("execution_conditions"),
-    risk_conditions: readPmStringArrayField("risk_conditions"),
-    source_claim_ids: sourceClaimIds,
-  };
-}
-
-function isPmDecisionScope(context: RuntimeContext): boolean {
-  return (
-    context.command.worker_id === "portfolio_manager" &&
-    context.command.stage === "portfolio_decision"
-  );
-}
-
-function assertPmDecisionScope(context: RuntimeContext): void {
-  // 只有 portfolio_manager 的最后阶段能写 PM 决策，其他 worker 即使传了参数也会失败。
-  if (!isPmDecisionScope(context)) {
-    throw new Error(
-      "openviking_write_material pm_decision is only allowed for portfolio_manager@portfolio_decision",
-    );
-  }
-}
-
-function writeMaterialParametersForContext(context: RuntimeContext) {
-  return isPmDecisionScope(context) ? WRITE_MATERIAL_PM_PARAMETERS : WRITE_MATERIAL_BASE_PARAMETERS;
-}
-
 function resolveWriteMaterialTargetUri(
   context: RuntimeContext,
   args: Record<string, unknown>,
@@ -1144,39 +1024,6 @@ function resolveWriteMaterialTargetUri(
     return targetUri;
   }
   throw new Error("openviking_write_material target must equal command.material_target.l1_uri");
-}
-
-async function writePmDecisionFile(params: {
-  context: RuntimeContext;
-  pmDecision: PmDecisionInput;
-  materialClaims: MaterialClaimsPayload;
-}): Promise<string> {
-  await fs.mkdir(params.context.evidenceDir, { recursive: true });
-  const pmDecisionPath = resolveEvidencePath(params.context, "pm-decision.json");
-  await fs.writeFile(
-    pmDecisionPath,
-    `${JSON.stringify(
-      {
-        schema_version: "control.pm_decision.v1",
-        run_id: params.context.command.run_id,
-        call_id: params.context.command.call_id,
-        worker_id: "portfolio_manager",
-        stage: "portfolio_decision",
-        material_id: params.materialClaims.material_id,
-        rating: params.pmDecision.rating,
-        final_conclusion: params.pmDecision.final_conclusion,
-        execution_conditions: params.pmDecision.execution_conditions,
-        risk_conditions: params.pmDecision.risk_conditions,
-        source_claim_ids: params.pmDecision.source_claim_ids,
-        source_l1_sha256: params.materialClaims.l1_sha256,
-        l1_uri: params.materialClaims.l1_uri,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
-  return pmDecisionPath;
 }
 
 function ensureCapabilityAccess(params: { capability: SingleWorkerReadCapability; uri: string }): {
@@ -1289,13 +1136,9 @@ export function registerOpenVikingTools(
     name: "openviking_write_material",
     label: "openviking_write_material",
     description: "Write worker material to OpenViking target URI from current command.",
-    parameters: writeMaterialParametersForContext(context),
+    parameters: WRITE_MATERIAL_BASE_PARAMETERS,
     execute: async (toolCallId, rawArgs) => {
       const args = asRecord(rawArgs);
-      const pmDecision = parsePmDecision(args);
-      if (pmDecision) {
-        assertPmDecisionScope(context);
-      }
       const targetUri = resolveWriteMaterialTargetUri(context, args);
       const contentRaw = args.content;
       if (typeof contentRaw !== "string" || contentRaw.trim().length === 0) {
@@ -1341,24 +1184,16 @@ export function registerOpenVikingTools(
         statSha256: l1WriteResult.statSha256,
         httpOperations,
       });
-      const { claimsPath, payload: materialClaims } = await writeMaterialClaimsFile({
+      const { claimsPath } = await writeMaterialClaimsFile({
         context,
         uri: targetUri,
         sha256: l1WriteResult.actualSha,
         sizeBytes: l1WriteResult.actualSize,
         source: "openclaw_openviking_write_material",
       });
-      const pmDecisionPath = pmDecision
-        ? await writePmDecisionFile({
-            context,
-            pmDecision,
-            materialClaims,
-          })
-        : undefined;
       return payloadTextResult({
         receipt_path: receiptPath,
         claims_path: claimsPath,
-        pm_decision_path: pmDecisionPath,
         uri: targetUri,
         sha256: l1WriteResult.actualSha,
       });

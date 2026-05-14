@@ -454,152 +454,6 @@ describe("openviking tools integration", () => {
     ).rejects.toThrow(/control\.claims\.v1/i);
   });
 
-  it("writes pm-decision evidence only for portfolio_manager@portfolio_decision", async () => {
-    const health = await fetch(`${OPENVIKING_BASE_URL}/health`);
-    expect(health.ok).toBe(true);
-    const stamp = `${Date.now()}`;
-    const targetUri = `viking://resources/workflow/test-t34a-pm-${stamp}/portfolio_decision/portfolio_manager/call-1/report.md`;
-    const l2Prefix = `viking://resources/workflow/test-t34a-pm-${stamp}/portfolio_decision/portfolio_manager/call-1/evidence/`;
-    const evidenceDir = await makeTempDir("openclaw-openviking-pm-decision-");
-    const command = buildCommand({
-      evidenceDir,
-      targetUri,
-      l2Prefix,
-      workerId: "portfolio_manager",
-      stage: "portfolio_decision",
-    });
-    const context = createRuntimeContext({
-      command,
-      openclawRunId: `openclaw-pm-decision-${stamp}`,
-    });
-    const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking_write_material",
-    );
-    expect(writeTool).toBeDefined();
-    const result = await writeTool!.execute("call-write-pm", {
-      uri: targetUri,
-      content: "PM report body",
-      pm_decision: {
-        rating: "buy",
-        final_conclusion: "maintain long bias",
-        execution_conditions: ["breakout above resistance"],
-        risk_conditions: ["stop below support"],
-        source_claim_ids: [],
-      },
-    });
-    const details = readDetailsRecord(result);
-    expect(typeof details.pm_decision_path).toBe("string");
-    expect(typeof details.claims_path).toBe("string");
-    const pmDecisionPath = String(details.pm_decision_path);
-    await expect(fs.access(pmDecisionPath)).resolves.toBeUndefined();
-    const pmDecision = JSON.parse(await fs.readFile(pmDecisionPath, "utf8")) as Record<
-      string,
-      unknown
-    >;
-    const expectedTopLevelFields = [
-      "schema_version",
-      "run_id",
-      "call_id",
-      "worker_id",
-      "stage",
-      "material_id",
-      "rating",
-      "final_conclusion",
-      "execution_conditions",
-      "risk_conditions",
-      "source_claim_ids",
-      "source_l1_sha256",
-      "l1_uri",
-    ];
-    for (const field of expectedTopLevelFields) {
-      expect(Object.prototype.hasOwnProperty.call(pmDecision, field)).toBe(true);
-    }
-    expect(Object.prototype.hasOwnProperty.call(pmDecision, "pm_decision")).toBe(false);
-    expect(pmDecision.schema_version).toBe("control.pm_decision.v1");
-    expect(pmDecision.run_id).toBe(command.run_id);
-    expect(pmDecision.call_id).toBe(command.call_id);
-    expect(pmDecision.worker_id).toBe("portfolio_manager");
-    expect(pmDecision.stage).toBe("portfolio_decision");
-    expect(pmDecision.l1_uri).toBe(targetUri);
-    expect(pmDecision.rating).toBe("buy");
-    expect(pmDecision.final_conclusion).toBe("maintain long bias");
-    expect(pmDecision.execution_conditions).toEqual(["breakout above resistance"]);
-    expect(pmDecision.risk_conditions).toEqual(["stop below support"]);
-    expect(pmDecision.source_claim_ids).toEqual([]);
-  });
-
-  it("rejects pm_decision for non-portfolio worker/stage", async () => {
-    const stamp = `${Date.now()}`;
-    const targetUri = `viking://resources/workflow/test-t34a-pm-reject-${stamp}/frontline/market_analyst/call-1/report.md`;
-    const l2Prefix = `viking://resources/workflow/test-t34a-pm-reject-${stamp}/frontline/market_analyst/call-1/evidence/`;
-    const evidenceDir = await makeTempDir("openclaw-openviking-pm-decision-reject-");
-    const command = buildCommand({
-      evidenceDir,
-      targetUri,
-      l2Prefix,
-      workerId: "market_analyst",
-      stage: "frontline",
-    });
-    const context = createRuntimeContext({
-      command,
-      openclawRunId: `openclaw-pm-decision-reject-${stamp}`,
-    });
-    const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking_write_material",
-    );
-    expect(writeTool).toBeDefined();
-    await expect(
-      writeTool!.execute("call-write-pm-reject", {
-        uri: targetUri,
-        content: "analysis body",
-        pm_decision: {
-          rating: "buy",
-          final_conclusion: "x",
-          execution_conditions: ["y"],
-          risk_conditions: ["z"],
-          source_claim_ids: [],
-        },
-      }),
-    ).rejects.toThrow(/portfolio_manager@portfolio_decision/i);
-  });
-
-  it("rejects pm_decision when rating is outside allowed enum and does not write pm-decision file", async () => {
-    const stamp = `${Date.now()}`;
-    const targetUri = `viking://resources/workflow/test-t34a-pm-rating-${stamp}/portfolio_decision/portfolio_manager/call-1/report.md`;
-    const l2Prefix = `viking://resources/workflow/test-t34a-pm-rating-${stamp}/portfolio_decision/portfolio_manager/call-1/evidence/`;
-    const evidenceDir = await makeTempDir("openclaw-openviking-pm-rating-reject-");
-    const command = buildCommand({
-      evidenceDir,
-      targetUri,
-      l2Prefix,
-      workerId: "portfolio_manager",
-      stage: "portfolio_decision",
-    });
-    const context = createRuntimeContext({
-      command,
-      openclawRunId: `openclaw-pm-rating-reject-${stamp}`,
-    });
-    const writeTool = registerOpenVikingTools(context, { baseUrl: OPENVIKING_BASE_URL }).find(
-      (item) => item.name === "openviking_write_material",
-    );
-    expect(writeTool).toBeDefined();
-    await expect(
-      writeTool!.execute("call-write-pm-rating-reject", {
-        uri: targetUri,
-        content: "PM report body",
-        pm_decision: {
-          rating: "HOLD / OBSERVATION-ONLY",
-          final_conclusion: "wait for confirmation",
-          execution_conditions: ["volume expansion"],
-          risk_conditions: ["break below support"],
-          source_claim_ids: [],
-        },
-      }),
-    ).rejects.toThrow(/pm_decision\.rating must be one of: buy, hold, sell, neutral, not_rated/i);
-
-    await expect(fs.access(path.join(evidenceDir, "pm-decision.json"))).rejects.toThrow();
-  });
-
   it("binds L2 reads to L2 index sha and entry sha", async () => {
     const health = await fetch(`${OPENVIKING_BASE_URL}/health`);
     expect(health.ok).toBe(true);
@@ -805,7 +659,7 @@ describe("openviking tools canonical download bytes", () => {
     );
   });
 
-  it("uses content/download canonical bytes for receipt, claims, and PM sidecar sha", async () => {
+  it("uses verified write bytes for receipt and claims sha", async () => {
     const stamp = `${Date.now()}`;
     const targetUri = `viking://resources/workflow/test-t62-canonical-${stamp}/portfolio_decision/portfolio_manager/call-1/report.md`;
     const l2Prefix = `viking://resources/workflow/test-t62-canonical-${stamp}/portfolio_decision/portfolio_manager/call-1/evidence/`;
@@ -826,12 +680,12 @@ describe("openviking tools canonical download bytes", () => {
     );
     expect(writeTool).toBeDefined();
 
-    const l1Canonical = "canonical-content-with-trailing-newline\n";
-    const l1Display = "canonical-content-with-trailing-newline";
+    const l1Canonical = "canonical-content";
+    const l1Display = "canonical-content";
     const l1CanonicalBytes = Uint8Array.from(Buffer.from(l1Canonical, "utf8"));
     const l1CanonicalSha = sha256OfBytes(l1CanonicalBytes);
     const l1DisplaySha = sha256OfUtf8(l1Display);
-    expect(l1CanonicalSha).not.toBe(l1DisplaySha);
+    expect(l1CanonicalSha).toBe(l1DisplaySha);
 
     const emptyL2IndexCanonical = `${JSON.stringify(
       {
@@ -915,7 +769,12 @@ describe("openviking tools canonical download bytes", () => {
           },
         ),
       )
-      .mockResolvedValueOnce(new Response(emptyL2IndexDisplay, { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: "ok", result: emptyL2IndexDisplay }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
       .mockResolvedValueOnce(
         new Response(emptyL2IndexBytes, {
           status: 200,
@@ -926,28 +785,16 @@ describe("openviking tools canonical download bytes", () => {
     const writeResult = await writeTool!.execute("call-write-canonical", {
       uri: targetUri,
       content: l1Canonical,
-      pm_decision: {
-        rating: "buy",
-        final_conclusion: "preserve canonical bytes sha",
-        execution_conditions: ["confirm breakout"],
-        risk_conditions: ["respect stop"],
-        source_claim_ids: [],
-      },
     });
     const writeDetails = readDetailsRecord(writeResult);
     expect(writeDetails.sha256).toBe(l1CanonicalSha);
-    expect(writeDetails.sha256).not.toBe(l1DisplaySha);
+    expect(writeDetails.sha256).toBe(l1DisplaySha);
 
     const receiptPath = String(writeDetails.receipt_path);
     const claimsPath = String(writeDetails.claims_path);
-    const pmDecisionPath = String(writeDetails.pm_decision_path);
     const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")) as Record<string, unknown>;
     const verification = (receipt.verification ?? {}) as Record<string, unknown>;
     const claims = JSON.parse(await fs.readFile(claimsPath, "utf8")) as Record<string, unknown>;
-    const pmDecision = JSON.parse(await fs.readFile(pmDecisionPath, "utf8")) as Record<
-      string,
-      unknown
-    >;
 
     expect(receipt.sha256).toBe(l1CanonicalSha);
     expect(receipt.size_bytes).toBe(l1CanonicalBytes.byteLength);
@@ -956,7 +803,6 @@ describe("openviking tools canonical download bytes", () => {
     expect(verification.expected_size_bytes).toBe(l1CanonicalBytes.byteLength);
     expect(verification.readback_size_bytes).toBe(l1CanonicalBytes.byteLength);
     expect(claims.l1_sha256).toBe(l1CanonicalSha);
-    expect(pmDecision.source_l1_sha256).toBe(l1CanonicalSha);
   });
 
   it("uses content/download canonical bytes for read_with_capability L1/L2 result sha256", async () => {
