@@ -196,6 +196,10 @@ describe("validateAgentRunSingleWorkerParams", () => {
             company_name: "Apple",
           },
           allowed_tools: ["market_data", "openviking_write_material"],
+          initial_tool_choice: {
+            type: "tool",
+            name: "market_data",
+          },
           upstream_materials: [],
           openviking_read_capabilities: [],
           material_target: {

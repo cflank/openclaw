@@ -9,6 +9,7 @@ import {
   renderSingleWorkerPromptTemplate,
   resolveSingleWorkerProfilePrompt,
   renderOpenVikingMaterialBrief,
+  resolveSingleWorkerInitialToolChoice,
   resolveSingleWorkerSystemContextPolicy,
   stripPromptFrontMatter,
   withRuntimeMarkers,
@@ -95,6 +96,25 @@ describe("single-worker runtime context", () => {
     const command = buildCommand("/tmp/evidence");
     command.system_context_policy = "single_worker_minimal";
     expect(resolveSingleWorkerSystemContextPolicy(command)).toBe("single_worker_minimal");
+  });
+
+  it("resolves initial tool choice only when it is inside allowed tools", () => {
+    const command = buildCommand("/tmp/evidence");
+    command.initial_tool_choice = { type: "tool", name: "market_data" };
+
+    expect(resolveSingleWorkerInitialToolChoice(command)).toEqual({
+      type: "tool",
+      name: "market_data",
+    });
+  });
+
+  it("rejects initial tool choice outside the single-worker allow list", () => {
+    const command = buildCommand("/tmp/evidence");
+    command.initial_tool_choice = { type: "tool", name: "other_market_data" };
+
+    expect(() => resolveSingleWorkerInitialToolChoice(command)).toThrow(
+      "singleWorkerCommand.initial_tool_choice must be in allowed_tools",
+    );
   });
 
   it("ensures evidence dir and writes workspace evidence without text body", async () => {

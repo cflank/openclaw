@@ -340,6 +340,7 @@ import {
   appendOpenVikingMaterialBrief,
   createRuntimeContext,
   isSingleWorkerDefaultPrompt,
+  resolveSingleWorkerInitialToolChoice,
   resolveSingleWorkerSystemContextPolicy,
   resolveSingleWorkerProfilePrompt,
   withRuntimeMarkers,
@@ -846,6 +847,21 @@ export function applyEmbeddedAttemptToolsAllowExact<T extends { name: string }>(
     return [];
   }
   return tools.filter((tool) => allowSet.has(normalizeToolName(tool.name)));
+}
+
+export function applySingleWorkerFinalEffectiveToolsAllow<T extends { name: string }>(params: {
+  tools: T[];
+  runtimeCommandAllowedTools?: string[];
+  toolsAllow?: string[];
+}): T[] {
+  if (!params.runtimeCommandAllowedTools) {
+    return params.tools;
+  }
+  const singleWorkerAllow = resolveSingleWorkerToolsAllow({
+    toolsAllow: params.toolsAllow,
+    commandAllowedTools: params.runtimeCommandAllowedTools,
+  });
+  return applyEmbeddedAttemptToolsAllowExact(params.tools, singleWorkerAllow);
 }
 
 export function resolveSingleWorkerMissingAllowedTools(params: {
@@ -1784,7 +1800,11 @@ export async function runEmbeddedAttempt(
       ownerOnlyToolAllowlist: params.ownerOnlyToolAllowlist,
       warn: (message) => log.warn(message),
     });
-    const effectiveTools = [...tools, ...filteredBundledTools];
+    const effectiveTools = applySingleWorkerFinalEffectiveToolsAllow({
+      tools: [...tools, ...filteredBundledTools],
+      runtimeCommandAllowedTools: runtimeContext?.command.allowed_tools,
+      toolsAllow: params.toolsAllow,
+    });
     // 到这个阶段 bundle MCP 工具已经 materialize，必须对 command.allowed_tools 做最终 fail-closed 校验。
     assertSingleWorkerAllowedToolsRegistered({
       runtimeContext,
@@ -2900,6 +2920,7 @@ export async function runEmbeddedAttempt(
       let providerPayloadCaptureCount = 0;
       if (runtimeContext) {
         const inner = activeSession.agent.streamFn;
+        let pendingInitialToolChoice = resolveSingleWorkerInitialToolChoice(runtimeContext.command);
         activeSession.agent.streamFn = (model, context, options) => {
           const optionRecord =
             options && typeof options === "object" ? (options as Record<string, unknown>) : {};
@@ -2911,8 +2932,11 @@ export async function runEmbeddedAttempt(
                   providerModel: unknown,
                 ) => unknown | Promise<unknown>)
               : undefined;
+          const initialToolChoice = pendingInitialToolChoice;
+          pendingInitialToolChoice = undefined;
           const nextOptions = {
             ...optionRecord,
+            ...(initialToolChoice ? { toolChoice: "required" } : {}),
             onPayload: async (payload: unknown, providerModel: unknown) => {
               const payloadForProvider = await resolveProviderPayloadForCapture({
                 payload,

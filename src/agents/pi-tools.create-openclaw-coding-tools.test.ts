@@ -180,6 +180,30 @@ describe("createOpenClawCodingTools", () => {
     );
   });
 
+  it("threads single-worker command into plugin tools when core tools are included", () => {
+    const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
+    createOpenClawToolsMock.mockClear();
+    const singleWorkerCommand = {
+      run_id: "run-1",
+      call_id: "call-1",
+      worker_id: "market_analyst",
+      stage: "frontline",
+    };
+
+    createOpenClawCodingTools({
+      config: testConfig,
+      includeCoreTools: true,
+      runtimeToolAllowlist: ["bb_crypto_data__build_trade_context", "crypto_market_data_pack"],
+      singleWorkerCommand,
+    });
+
+    expect(createOpenClawToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        singleWorkerCommand,
+      }),
+    );
+  });
+
   it("keeps runtime-allowlisted plugin tools through the final tool policy pipeline", () => {
     const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
     createOpenClawToolsMock.mockImplementationOnce(() => [

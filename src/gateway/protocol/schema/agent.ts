@@ -257,6 +257,14 @@ const SingleWorkerReadPolicySchema = Type.Object(
   { additionalProperties: false },
 );
 
+const SingleWorkerInitialToolChoiceSchema = Type.Object(
+  {
+    type: Type.Literal("tool"),
+    name: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
 export const SingleWorkerCommandSchema = Type.Object(
   {
     agent: NonEmptyString,
@@ -276,6 +284,7 @@ export const SingleWorkerCommandSchema = Type.Object(
     system_context_policy: Type.Optional(
       Type.Union([Type.Literal("openclaw_default"), Type.Literal("single_worker_minimal")]),
     ),
+    initial_tool_choice: Type.Optional(SingleWorkerInitialToolChoiceSchema),
   },
   { additionalProperties: false },
 );

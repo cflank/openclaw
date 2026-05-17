@@ -11,6 +11,7 @@ import {
   composeSystemPromptWithHookContext,
   decodeHtmlEntitiesInObject,
   applyEmbeddedAttemptToolsAllow,
+  applySingleWorkerFinalEffectiveToolsAllow,
   isPrimaryBootstrapRun,
   mergeOrphanedTrailingUserPrompt,
   normalizeMessagesForLlmBoundary,
@@ -82,6 +83,30 @@ describe("applyEmbeddedAttemptToolsAllow", () => {
     expect(
       applyEmbeddedAttemptToolsAllow(tools, [" cron ", "READ"]).map((tool) => tool.name),
     ).toEqual(["cron", "read"]);
+  });
+});
+
+describe("applySingleWorkerFinalEffectiveToolsAllow", () => {
+  it("keeps bundled MCP tools inside the single-worker allowed_tools boundary", () => {
+    const tools = [
+      { name: "bb_crypto_data__build_trade_context" },
+      { name: "bb_crypto_data__compute_ahr999" },
+      { name: "read" },
+    ];
+
+    expect(
+      applySingleWorkerFinalEffectiveToolsAllow({
+        tools,
+        runtimeCommandAllowedTools: ["bb_crypto_data__build_trade_context"],
+        toolsAllow: ["bb_crypto_data__build_trade_context"],
+      }).map((tool) => tool.name),
+    ).toEqual(["bb_crypto_data__build_trade_context"]);
+  });
+
+  it("does not change non-single-worker effective tools", () => {
+    const tools = [{ name: "read" }, { name: "message" }];
+
+    expect(applySingleWorkerFinalEffectiveToolsAllow({ tools })).toEqual(tools);
   });
 });
 

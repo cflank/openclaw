@@ -66,6 +66,10 @@ export type SingleWorkerReadPolicy = {
 };
 
 export type SingleWorkerSystemContextPolicy = "openclaw_default" | "single_worker_minimal";
+export type SingleWorkerInitialToolChoice = {
+  type: "tool";
+  name: string;
+};
 
 export type SingleWorkerCommand = {
   // claw-trade 发来的单 worker 命令；OpenClaw 只按它运行一轮，不拥有整条交易工作流。
@@ -84,6 +88,7 @@ export type SingleWorkerCommand = {
   read_policy: SingleWorkerReadPolicy;
   stop_after_first_response: boolean;
   system_context_policy?: SingleWorkerSystemContextPolicy;
+  initial_tool_choice?: SingleWorkerInitialToolChoice;
 };
 
 const APPROVED_MATERIALS_HEADER = "[ApprovedMaterials]";
@@ -124,6 +129,23 @@ export function resolveSingleWorkerSystemContextPolicy(
     return value;
   }
   return "openclaw_default";
+}
+
+export function resolveSingleWorkerInitialToolChoice(
+  command: SingleWorkerCommand | undefined,
+): SingleWorkerInitialToolChoice | undefined {
+  const choice = command?.initial_tool_choice;
+  if (!choice) {
+    return undefined;
+  }
+  const name = typeof choice.name === "string" ? choice.name.trim() : "";
+  if (choice.type !== "tool" || !name) {
+    throw new Error("singleWorkerCommand.initial_tool_choice must be a tool name");
+  }
+  if (!command?.allowed_tools.includes(name)) {
+    throw new Error("singleWorkerCommand.initial_tool_choice must be in allowed_tools");
+  }
+  return { type: "tool", name };
 }
 
 export type WorkspaceEvidence = {
