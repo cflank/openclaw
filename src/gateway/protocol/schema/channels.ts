@@ -345,6 +345,7 @@ export const WebLoginWaitParamsSchema = Type.Object(
   {
     timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
     accountId: Type.Optional(Type.String()),
+    sessionKey: Type.Optional(NonEmptyString),
     currentQrDataUrl: Type.Optional(QrDataUrlSchema),
   },
   { additionalProperties: false },

@@ -138,6 +138,11 @@ async function expectOvpackUpload(
   expect(await content!.async("string")).toBe(params.content);
 }
 
+function parseJsonRequestBody(init: RequestInit | undefined): Record<string, unknown> {
+  expect(typeof init?.body).toBe("string");
+  return JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+}
+
 describe("openviking write import-path compat", () => {
   afterEach(async () => {
     await Promise.all(
@@ -278,12 +283,142 @@ describe("openviking write import-path compat", () => {
         .map((item) => (typeof item.operation === "string" ? item.operation : ""))
         .filter((item) => item.length > 0);
       expect(opNames).not.toContain("fs.stat.before_write");
-      expect(opNames).toContain("pack.import");
+      expect(opNames).toContain("pack.import.vectorize_false");
       expect(opNames).toContain("fs.stat.after_write");
       expect(opNames).toContain("content.read.after_write");
       expect(opNames).toContain("content.download.after_write");
       expect(opNames).toContain("content.download.after_write.l2_index");
     } finally {
+      cleanupFetch();
+    }
+  });
+
+  it("passes vectorize=true only for L1 report writes when enabled by env", async () => {
+    const previousVectorize = process.env.CLAW_TRADE_OPENVIKING_VECTORIZE;
+    process.env.CLAW_TRADE_OPENVIKING_VECTORIZE = "1";
+    const evidenceDir = await makeTempDir("openviking-import-vectorize-");
+    const targetUri =
+      "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1/report.md";
+    const l2Prefix =
+      "viking://resources/workflow/run-prestat/frontline/market_analyst/call-1/evidence/";
+    const command = buildCommand({ evidenceDir, targetUri, l2Prefix });
+    const l2IndexContent = buildExpectedEmptyL2IndexContent(command);
+    const l2IndexSize = Buffer.byteLength(l2IndexContent, "utf8");
+    const cleanupFetch = installFetchPlan([
+      {
+        method: "POST",
+        path: "/api/v1/resources/temp_upload",
+        response: new Response(
+          JSON.stringify({ status: "ok", result: { temp_file_id: "tmp-l1" } }),
+          { status: 200 },
+        ),
+      },
+      {
+        method: "POST",
+        path: "/api/v1/pack/import",
+        assertInit: (init) => expect(parseJsonRequestBody(init).vectorize).toBe(true),
+        response: new Response(JSON.stringify({ status: "ok", result: {} }), { status: 200 }),
+      },
+      {
+        method: "GET",
+        path: "/api/v1/fs/stat?uri=",
+        response: new Response(
+          JSON.stringify({
+            status: "ok",
+            result: {
+              name: "report.md",
+              size_bytes: 5,
+              checksums: {
+                sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+              },
+            },
+          }),
+          { status: 200 },
+        ),
+      },
+      {
+        method: "GET",
+        path: "/api/v1/content/read?uri=",
+        response: new Response("hello", { status: 200 }),
+      },
+      {
+        method: "GET",
+        path: "/api/v1/content/download?uri=",
+        response: new Response(new Uint8Array(Buffer.from("hello", "utf8")), { status: 200 }),
+      },
+      {
+        method: "POST",
+        path: "/api/v1/resources/temp_upload",
+        response: new Response(
+          JSON.stringify({ status: "ok", result: { temp_file_id: "tmp-l2" } }),
+          { status: 200 },
+        ),
+      },
+      {
+        method: "POST",
+        path: "/api/v1/pack/import",
+        assertInit: (init) => expect(parseJsonRequestBody(init).vectorize).toBe(false),
+        response: new Response(JSON.stringify({ status: "ok", result: {} }), { status: 200 }),
+      },
+      {
+        method: "GET",
+        path: "/api/v1/fs/stat?uri=",
+        response: new Response(
+          JSON.stringify({
+            status: "ok",
+            result: {
+              name: "index.json",
+              size_bytes: l2IndexSize,
+            },
+          }),
+          { status: 200 },
+        ),
+      },
+      {
+        method: "GET",
+        path: "/api/v1/content/read?uri=",
+        response: new Response(
+          JSON.stringify({
+            status: "ok",
+            result: l2IndexContent,
+          }),
+          { status: 200 },
+        ),
+      },
+      {
+        method: "GET",
+        path: "/api/v1/content/download?uri=",
+        response: new Response(new Uint8Array(Buffer.from(l2IndexContent, "utf8")), {
+          status: 200,
+        }),
+      },
+    ]);
+    try {
+      const context = createRuntimeContext({ command, openclawRunId: "oc-import-vectorize" });
+      const writeTool = registerOpenVikingTools(context, { baseUrl: "http://127.0.0.1:1933" }).find(
+        (item) => item.name === "openviking_write_material",
+      );
+      expect(writeTool).toBeDefined();
+      const result = await writeTool!.execute("tool-call-vectorize", { content: "hello" });
+      const details = readDetailsRecord(result);
+      const receipt = JSON.parse(await fs.readFile(String(details.receipt_path), "utf8")) as Record<
+        string,
+        unknown
+      >;
+      const operations = Array.isArray(receipt.http_operations)
+        ? (receipt.http_operations as Array<Record<string, unknown>>)
+        : [];
+      const opNames = operations
+        .map((item) => (typeof item.operation === "string" ? item.operation : ""))
+        .filter((item) => item.length > 0);
+      expect(opNames).toContain("pack.import.vectorize_true");
+      expect(opNames).toContain("pack.import.l2_index.vectorize_false");
+    } finally {
+      if (previousVectorize === undefined) {
+        delete process.env.CLAW_TRADE_OPENVIKING_VECTORIZE;
+      } else {
+        process.env.CLAW_TRADE_OPENVIKING_VECTORIZE = previousVectorize;
+      }
       cleanupFetch();
     }
   });

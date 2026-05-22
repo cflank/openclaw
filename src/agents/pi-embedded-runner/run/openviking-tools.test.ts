@@ -275,7 +275,8 @@ describe("openviking tools integration", () => {
     expect(operationNames).toContain("content.read.after_write.l2_index");
     expect(operationNames).toContain("content.download.after_write.l2_index");
     expect(
-      operationNames.includes("content.write.replace") || operationNames.includes("pack.import"),
+      operationNames.includes("content.write.replace") ||
+        operationNames.includes("pack.import.vectorize_false"),
     ).toBe(true);
     expect(claims.schema_version).toBe("control.claims.v1");
     expect(claims.source).toBe("openclaw_openviking_write_material");

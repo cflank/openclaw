@@ -1,5 +1,6 @@
 import { listChannelPlugins } from "../../channels/plugins/index.js";
 import type { ChannelId } from "../../channels/plugins/types.public.js";
+import { renderQrPngDataUrl } from "../../media/qr-image.js";
 import {
   ErrorCodes,
   errorShape,
@@ -11,10 +12,27 @@ import { formatForLog } from "../ws-log.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 
 const WEB_LOGIN_METHODS = new Set(["web.login.start", "web.login.wait"]);
+const QR_PNG_DATA_URL_PREFIX = "data:image/png;base64,";
+
+function channelPluginSupportsWebLoginMethod(
+  plugin: ReturnType<typeof listChannelPlugins>[number],
+  method: string,
+): boolean {
+  if ((plugin.gatewayMethods ?? []).some((candidate) => candidate === method)) {
+    return true;
+  }
+  if (method === "web.login.start") {
+    return Boolean(plugin.gateway?.loginWithQrStart);
+  }
+  if (method === "web.login.wait") {
+    return Boolean(plugin.gateway?.loginWithQrWait);
+  }
+  return false;
+}
 
 const resolveWebLoginProvider = () =>
   listChannelPlugins().find((plugin) =>
-    (plugin.gatewayMethods ?? []).some((method) => WEB_LOGIN_METHODS.has(method)),
+    [...WEB_LOGIN_METHODS].some((method) => channelPluginSupportsWebLoginMethod(plugin, method)),
   ) ?? null;
 
 function resolveAccountId(params: unknown): string | undefined {
@@ -37,6 +55,23 @@ function respondProviderUnsupported(respond: RespondFn, providerId: string) {
     undefined,
     errorShape(ErrorCodes.INVALID_REQUEST, `web login is not supported by provider ${providerId}`),
   );
+}
+
+async function normalizeQrLoginResult<T>(result: T): Promise<T> {
+  if (!result || typeof result !== "object") {
+    return result;
+  }
+  const qrDataUrl = (result as { qrDataUrl?: unknown }).qrDataUrl;
+  if (typeof qrDataUrl !== "string" || !qrDataUrl.trim()) {
+    return result;
+  }
+  if (qrDataUrl.startsWith(QR_PNG_DATA_URL_PREFIX)) {
+    return result;
+  }
+  return {
+    ...result,
+    qrDataUrl: await renderQrPngDataUrl(qrDataUrl),
+  };
 }
 
 function wasChannelRunning(params: {
@@ -102,7 +137,7 @@ export const webHandlers: GatewayRequestHandlers = {
       } else if (wasRunning && !result.qrDataUrl) {
         await context.startChannel(provider.id, accountId);
       }
-      respond(true, result, undefined);
+      respond(true, await normalizeQrLoginResult(result), undefined);
     } catch (err) {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
     }
@@ -136,6 +171,10 @@ export const webHandlers: GatewayRequestHandlers = {
             ? (params as { timeoutMs?: number }).timeoutMs
             : undefined,
         accountId,
+        sessionKey:
+          typeof (params as { sessionKey?: unknown }).sessionKey === "string"
+            ? (params as { sessionKey?: string }).sessionKey
+            : undefined,
         currentQrDataUrl:
           typeof (params as { currentQrDataUrl?: unknown }).currentQrDataUrl === "string"
             ? (params as { currentQrDataUrl?: string }).currentQrDataUrl
@@ -144,7 +183,7 @@ export const webHandlers: GatewayRequestHandlers = {
       if (result.connected) {
         await context.startChannel(provider.id, accountId);
       }
-      respond(true, result, undefined);
+      respond(true, await normalizeQrLoginResult(result), undefined);
     } catch (err) {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
     }

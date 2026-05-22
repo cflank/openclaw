@@ -161,6 +161,31 @@ describe("gateway-cli coverage", () => {
     );
   });
 
+  it("forwards repeated gateway call scopes", async () => {
+    callGateway.mockClear();
+
+    await runGatewayCommand([
+      "gateway",
+      "call",
+      "agent.runSingleWorker",
+      "--params",
+      '{"command":{}}',
+      "--scope",
+      "operator.read",
+      "--scope",
+      "operator.write",
+      "--json",
+    ]);
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "agent.runSingleWorker",
+        params: { command: {} },
+        scopes: ["operator.read", "operator.write"],
+      }),
+    );
+  });
+
   it("rejects gateway call params from both inline JSON and file", async () => {
     callGateway.mockClear();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-cli-params-"));

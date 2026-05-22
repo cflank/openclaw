@@ -9,9 +9,17 @@ describe("WebLoginWaitParamsSchema", () => {
   it("bounds caller-provided QR data URLs", () => {
     expect(
       validate({
+        sessionKey: "login-session-1",
         currentQrDataUrl: "data:image/png;base64,qr",
       }),
     ).toBe(true);
+
+    expect(
+      validate({
+        sessionKey: "",
+        currentQrDataUrl: "data:image/png;base64,qr",
+      }),
+    ).toBe(false);
 
     expect(
       validate({

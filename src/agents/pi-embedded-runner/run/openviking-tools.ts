@@ -107,6 +107,11 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function shouldVectorizeOpenVikingL1Writes(): boolean {
+  const raw = process.env.CLAW_TRADE_OPENVIKING_VECTORIZE?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 function resolveOpenVikingWriteLockPath(baseUrl: string): string {
   const configured = process.env.OPENVIKING_WRITE_LOCK_PATH?.trim();
   if (configured) {
@@ -578,6 +583,7 @@ async function writeAndVerifyWithRetry(params: {
   httpOperations: OpenVikingHttpOperation[];
   operationSuffix?: string;
   retryLimit?: number;
+  vectorize?: boolean;
 }): Promise<VerifiedWriteResult> {
   const retryLimit = Math.max(1, params.retryLimit ?? OPENVIKING_WRITE_RETRY_LIMIT);
   let lastError: unknown;
@@ -688,8 +694,10 @@ async function writeAndVerifyOpenVikingFile(params: {
   content: string;
   httpOperations: OpenVikingHttpOperation[];
   operationSuffix?: string;
+  vectorize?: boolean;
 }): Promise<VerifiedWriteResult> {
   const suffix = params.operationSuffix ?? "";
+  const vectorize = params.vectorize === true;
   const expectedWriteSha = sha256OfUtf8(params.content);
   const expectedWriteSize = Buffer.byteLength(params.content, "utf8");
   const expectedNormalized = normalizeOpenVikingText(params.content);
@@ -719,13 +727,13 @@ async function writeAndVerifyOpenVikingFile(params: {
     baseUrl: params.baseUrl,
     endpoint: "/api/v1/pack/import",
     method: "POST",
-    operation: `pack.import${suffix}`,
+    operation: `pack.import${suffix}.vectorize_${String(vectorize)}`,
     httpOperations: params.httpOperations,
     body: JSON.stringify({
       temp_file_id: tempFileId,
       parent: ovpack.parentUri,
       force: true,
-      vectorize: false,
+      vectorize,
     }),
     headers: {
       "Content-Type": "application/json",
@@ -965,6 +973,7 @@ export async function writeOpenVikingMaterialFromRuntime(params: {
     uri: targetUri,
     content,
     httpOperations,
+    vectorize: shouldVectorizeOpenVikingL1Writes(),
   });
   const l2IndexUri = resolveL2IndexUri(params.context.command.material_target.l2_prefix);
   await writeAndVerifyWithRetry({
