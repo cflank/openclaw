@@ -74,6 +74,39 @@ async function normalizeQrLoginResult<T>(result: T): Promise<T> {
   };
 }
 
+function isLoginConnected(result: unknown): boolean {
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+  const login = result as { connected?: unknown; alreadyConnected?: unknown };
+  return login.connected === true || login.alreadyConnected === true;
+}
+
+function resolveLoginAccountId(params: {
+  context: Parameters<GatewayRequestHandlers["web.login.start"]>[0]["context"];
+  channelId: ChannelId;
+  requestedAccountId?: string;
+  result?: unknown;
+}): string | undefined {
+  if (params.requestedAccountId) {
+    return params.requestedAccountId;
+  }
+  if (params.result && typeof params.result === "object") {
+    const resultAccountId = (params.result as { accountId?: unknown }).accountId;
+    if (typeof resultAccountId === "string" && resultAccountId.trim()) {
+      return resultAccountId;
+    }
+  }
+  const runtime = params.context.getRuntimeSnapshot();
+  const defaultAccountId = runtime.channels[params.channelId]?.accountId;
+  if (typeof defaultAccountId === "string" && defaultAccountId.trim()) {
+    return defaultAccountId;
+  }
+  const accounts = runtime.channelAccounts[params.channelId];
+  const accountIds = accounts ? Object.keys(accounts) : [];
+  return accountIds.length === 1 ? accountIds[0] : undefined;
+}
+
 function wasChannelRunning(params: {
   context: Parameters<GatewayRequestHandlers["web.login.start"]>[0]["context"];
   channelId: ChannelId;
@@ -117,12 +150,17 @@ export const webHandlers: GatewayRequestHandlers = {
         respondProviderUnsupported(respond, provider.id);
         return;
       }
+      const channelAccountId = resolveLoginAccountId({
+        context,
+        channelId: provider.id,
+        requestedAccountId: accountId,
+      });
       const wasRunning = wasChannelRunning({
         context,
         channelId: provider.id,
-        accountId,
+        accountId: channelAccountId,
       });
-      await context.stopChannel(provider.id, accountId);
+      await context.stopChannel(provider.id, channelAccountId);
       const result = await provider.gateway.loginWithQrStart({
         force: Boolean((params as { force?: boolean }).force),
         timeoutMs:
@@ -130,12 +168,18 @@ export const webHandlers: GatewayRequestHandlers = {
             ? (params as { timeoutMs?: number }).timeoutMs
             : undefined,
         verbose: Boolean((params as { verbose?: boolean }).verbose),
-        accountId,
+        accountId: channelAccountId,
       });
-      if (result.connected) {
-        await context.startChannel(provider.id, accountId);
+      const resultAccountId = resolveLoginAccountId({
+        context,
+        channelId: provider.id,
+        requestedAccountId: channelAccountId,
+        result,
+      });
+      if (isLoginConnected(result)) {
+        await context.startChannel(provider.id, resultAccountId);
       } else if (wasRunning && !result.qrDataUrl) {
-        await context.startChannel(provider.id, accountId);
+        await context.startChannel(provider.id, resultAccountId);
       }
       respond(true, await normalizeQrLoginResult(result), undefined);
     } catch (err) {
@@ -180,8 +224,16 @@ export const webHandlers: GatewayRequestHandlers = {
             ? (params as { currentQrDataUrl?: string }).currentQrDataUrl
             : undefined,
       });
-      if (result.connected) {
-        await context.startChannel(provider.id, accountId);
+      if (isLoginConnected(result)) {
+        await context.startChannel(
+          provider.id,
+          resolveLoginAccountId({
+            context,
+            channelId: provider.id,
+            requestedAccountId: accountId,
+            result,
+          }),
+        );
       }
       respond(true, await normalizeQrLoginResult(result), undefined);
     } catch (err) {

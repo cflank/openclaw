@@ -700,30 +700,35 @@ async function resolveVerifiedEvidencePath(params: {
     return undefined;
   }
   const resolvedEvidenceDir = path.resolve(params.evidenceDir);
-  const resolvedPath = path.isAbsolute(candidate)
-    ? path.resolve(candidate)
-    : path.resolve(resolvedEvidenceDir, candidate);
+  const resolvedWorkspaceDir = path.resolve(process.cwd());
+  const resolvedPathCandidates = path.isAbsolute(candidate)
+    ? [path.resolve(candidate)]
+    : [path.resolve(resolvedEvidenceDir, candidate), path.resolve(resolvedWorkspaceDir, candidate)];
+  const uniqueResolvedPathCandidates = Array.from(new Set(resolvedPathCandidates));
   let realEvidenceDir: string;
   try {
     realEvidenceDir = await fs.realpath(resolvedEvidenceDir);
   } catch {
     return undefined;
   }
-  try {
-    // 这里必须用 realpath 做真实路径校验，防止 evidence_dir 内部的 symlink/伪路径
-    // 指到目录外部文件或日志，再冒充 provider request / visible tools / first response 证据。
-    const realResolvedPath = await fs.realpath(resolvedPath);
-    if (!isPathWithinDir(realResolvedPath, realEvidenceDir)) {
-      return undefined;
+  for (const resolvedPath of uniqueResolvedPathCandidates) {
+    try {
+      // 这里必须用 realpath 做真实路径校验，防止 evidence_dir 内部的 symlink/伪路径
+      // 指到目录外部文件或日志，再冒充 provider request / visible tools / first response 证据。
+      const realResolvedPath = await fs.realpath(resolvedPath);
+      if (!isPathWithinDir(realResolvedPath, realEvidenceDir)) {
+        continue;
+      }
+      const stat = await fs.stat(realResolvedPath);
+      if (!stat.isFile()) {
+        continue;
+      }
+      return realResolvedPath;
+    } catch {
+      continue;
     }
-    const stat = await fs.stat(realResolvedPath);
-    if (!stat.isFile()) {
-      return undefined;
-    }
-    return realResolvedPath;
-  } catch {
-    return undefined;
   }
+  return undefined;
 }
 
 async function normalizeSingleWorkerEvidencePaths(params: {

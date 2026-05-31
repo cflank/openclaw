@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BARE_SESSION_RESET_PROMPT } from "../../auto-reply/reply/session-reset-prompt.js";
 import {
@@ -607,6 +608,117 @@ describe("gateway agent handler", () => {
         openviking_receipt_path: evidence.openvikingReceiptPath,
       });
     });
+  });
+
+  it("accepts evidence file-name paths relative to evidence_dir", async () => {
+    await withTempDir(
+      { prefix: "openclaw-gateway-single-worker-relative-evidence-dir-" },
+      async (root) => {
+        const evidenceDir = `${root}/evidence`;
+        const evidence = await writeSingleWorkerEvidenceFiles({
+          evidenceDir,
+          includeFullRun: false,
+          providerRequestPayload: {
+            source: "provider_request_capture",
+            payload: {
+              request_id: "req_relative_evidence_dir",
+            },
+          },
+        });
+        mocks.agentCommand.mockResolvedValue({
+          meta: {
+            agentMeta: {
+              singleWorkerEvidence: {
+                workspaceEvidencePath: path.basename(evidence.workspaceEvidencePath),
+                providerRequestPath: path.basename(evidence.providerRequestPath),
+                visibleToolsPath: path.basename(evidence.visibleToolsPath),
+                firstResponsePath: path.basename(evidence.firstResponsePath),
+                toolCallsStatus: "none",
+                toolCallsPath: path.basename(evidence.toolCallsPath),
+              },
+            },
+          },
+        });
+
+        const respond = await invokeAgentRunSingleWorker(
+          buildSingleWorkerRunParams({
+            evidenceDir,
+            stopAfterFirstResponse: true,
+          }),
+          { reqId: "single-worker-relative-evidence-dir" },
+        );
+
+        const [ok, payload] = respond.mock.calls[0] as [boolean, Record<string, unknown>];
+        expect(ok).toBe(true);
+        expect(payload).toMatchObject({
+          status: "succeeded",
+          provider_request_id: "req_relative_evidence_dir",
+          workspace_evidence_path: evidence.workspaceEvidencePath,
+          provider_request_path: evidence.providerRequestPath,
+          visible_tools_path: evidence.visibleToolsPath,
+          first_response_path: evidence.firstResponsePath,
+          tool_calls_path: evidence.toolCallsPath,
+        });
+      },
+    );
+  });
+
+  it("accepts workspace-relative evidence paths that already include evidence_dir", async () => {
+    await withTempDir(
+      { prefix: "openclaw-gateway-single-worker-relative-workspace-path-" },
+      async (root) => {
+        const evidenceDir = `${root}/evidence`;
+        const relativeEvidenceDir = path.relative(process.cwd(), evidenceDir);
+        const evidence = await writeSingleWorkerEvidenceFiles({
+          evidenceDir,
+          includeFullRun: true,
+          providerRequestPayload: {
+            source: "provider_request_capture",
+            payload: {
+              request_id: "req_relative_workspace_path",
+            },
+          },
+        });
+        mocks.agentCommand.mockResolvedValue({
+          meta: {
+            agentMeta: {
+              singleWorkerEvidence: {
+                workspaceEvidencePath: path.join(relativeEvidenceDir, "workspace-evidence.json"),
+                providerRequestPath: path.join(relativeEvidenceDir, "provider-request.json"),
+                visibleToolsPath: path.join(relativeEvidenceDir, "visible-tools.json"),
+                firstResponsePath: path.join(relativeEvidenceDir, "first-response.json"),
+                toolCallsStatus: "recorded",
+                toolCallsPath: path.join(relativeEvidenceDir, "tool-calls.json"),
+                rawOutputPath: path.join(relativeEvidenceDir, "raw-output.md"),
+                openvikingReceiptPath: path.join(relativeEvidenceDir, "openviking-receipt.json"),
+              },
+            },
+          },
+        });
+
+        const respond = await invokeAgentRunSingleWorker(
+          buildSingleWorkerRunParams({
+            evidenceDir: relativeEvidenceDir,
+            stopAfterFirstResponse: false,
+          }),
+          { reqId: "single-worker-relative-workspace-path" },
+        );
+
+        const [ok, payload] = respond.mock.calls[0] as [boolean, Record<string, unknown>];
+        expect(ok).toBe(true);
+        expect(payload).toMatchObject({
+          status: "succeeded",
+          provider_request_id: "req_relative_workspace_path",
+          workspace_evidence_path: evidence.workspaceEvidencePath,
+          provider_request_path: evidence.providerRequestPath,
+          visible_tools_path: evidence.visibleToolsPath,
+          first_response_path: evidence.firstResponsePath,
+          tool_calls_path: evidence.toolCallsPath,
+          raw_output_path: evidence.rawOutputPath,
+          openviking_receipt_path: evidence.openvikingReceiptPath,
+        });
+      },
+    );
   });
 
   it("returns provider_request_id_status=not_available when capture has no request id", async () => {

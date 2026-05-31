@@ -26,6 +26,13 @@ function resolveRuntimeSubagentMode(
   return "default";
 }
 
+function pinChannelRegistryIfPresent(registry: PluginRegistry): void {
+  if ((registry.channels?.length ?? 0) === 0) {
+    return;
+  }
+  pinActivePluginChannelRegistry(registry);
+}
+
 function installStandaloneRegistry(
   registry: PluginRegistry,
   params: {
@@ -40,7 +47,7 @@ function installStandaloneRegistry(
     case "active":
       break;
     case "channel":
-      pinActivePluginChannelRegistry(registry);
+      pinChannelRegistryIfPresent(registry);
       break;
     case "http-route":
       pinActivePluginHttpRouteRegistry(registry);
@@ -95,7 +102,7 @@ export function ensureStandaloneRuntimePluginRegistryLoaded(params: {
       case "active":
         break;
       case "channel":
-        pinActivePluginChannelRegistry(registry);
+        pinChannelRegistryIfPresent(registry);
         break;
       case "http-route":
         pinActivePluginHttpRouteRegistry(registry);

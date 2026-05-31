@@ -84,6 +84,37 @@ function createRunningWhatsappContext() {
   };
 }
 
+function createRunningWeixinContext() {
+  const startChannel = vi.fn();
+  const stopChannel = vi.fn();
+  return {
+    startChannel,
+    stopChannel,
+    context: {
+      stopChannel,
+      startChannel,
+      getRuntimeSnapshot: vi.fn(
+        (): ChannelRuntimeSnapshot => ({
+          channels: {
+            "openclaw-weixin": {
+              accountId: "weixin-account-1",
+              running: true,
+            },
+          },
+          channelAccounts: {
+            "openclaw-weixin": {
+              "weixin-account-1": {
+                accountId: "weixin-account-1",
+                running: true,
+              },
+            },
+          },
+        }),
+      ),
+    } as unknown as GatewayRequestHandlerOptions["context"],
+  };
+}
+
 describe("webHandlers web.login.start", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -152,6 +183,79 @@ describe("webHandlers web.login.start", () => {
 
     expect(stopChannel).toHaveBeenCalledWith("whatsapp", "default");
     expect(startChannel).not.toHaveBeenCalled();
+  });
+
+  it("restarts the channel when provider reports already connected", async () => {
+    const loginWithQrStart = vi.fn().mockResolvedValue({
+      connected: false,
+      alreadyConnected: true,
+      message: "已连接过此 OpenClaw，无需重复连接。",
+    });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "openclaw-weixin",
+        gatewayMethods: ["web.login.start"],
+        gateway: { loginWithQrStart },
+      },
+    ]);
+    const { context, startChannel, stopChannel } = createRunningWhatsappContext();
+    const respond = vi.fn();
+
+    await webHandlers["web.login.start"](
+      createOptions(
+        { accountId: "default" },
+        {
+          respond,
+          context,
+        },
+      ),
+    );
+
+    expect(stopChannel).toHaveBeenCalledWith("openclaw-weixin", "default");
+    expect(startChannel).toHaveBeenCalledWith("openclaw-weixin", "default");
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        connected: false,
+        alreadyConnected: true,
+        message: "已连接过此 OpenClaw，无需重复连接。",
+      },
+      undefined,
+    );
+  });
+
+  it("uses the runtime default account when login start reports already connected without an account id", async () => {
+    const loginWithQrStart = vi.fn().mockResolvedValue({
+      connected: false,
+      alreadyConnected: true,
+      message: "已连接过此 OpenClaw，无需重复连接。",
+    });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "openclaw-weixin",
+        gatewayMethods: ["web.login.start"],
+        gateway: { loginWithQrStart },
+      },
+    ]);
+    const { context, startChannel, stopChannel } = createRunningWeixinContext();
+
+    await webHandlers["web.login.start"](
+      createOptions(
+        {},
+        {
+          context,
+        },
+      ),
+    );
+
+    expect(loginWithQrStart).toHaveBeenCalledWith({
+      accountId: "weixin-account-1",
+      force: false,
+      timeoutMs: undefined,
+      verbose: false,
+    });
+    expect(stopChannel).toHaveBeenCalledWith("openclaw-weixin", "weixin-account-1");
+    expect(startChannel).toHaveBeenCalledWith("openclaw-weixin", "weixin-account-1");
   });
 
   it("uses and renders channel QR login providers even when they do not declare gateway method names", async () => {
@@ -318,5 +422,101 @@ describe("webHandlers web.login.wait", () => {
       },
       undefined,
     );
+  });
+
+  it("restarts the channel on wait when provider reports already connected", async () => {
+    const loginWithQrWait = vi.fn().mockResolvedValue({
+      connected: false,
+      alreadyConnected: true,
+      message: "已连接过此 OpenClaw，无需重复连接。",
+    });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "openclaw-weixin",
+        gatewayMethods: ["web.login.wait"],
+        gateway: { loginWithQrWait },
+      },
+    ]);
+    const respond = vi.fn();
+    const startChannel = vi.fn();
+
+    await webHandlers["web.login.wait"](
+      createOptions(
+        {
+          accountId: "default",
+          sessionKey: "weixin-session-3",
+        },
+        {
+          req: {
+            type: "req",
+            id: "req-4",
+            method: "web.login.wait",
+            params: {
+              accountId: "default",
+              sessionKey: "weixin-session-3",
+            },
+          } as GatewayRequestHandlerOptions["req"],
+          respond,
+          context: {
+            ...createOptions({}, {}).context,
+            startChannel,
+          } as GatewayRequestHandlerOptions["context"],
+        },
+      ),
+    );
+
+    expect(startChannel).toHaveBeenCalledWith("openclaw-weixin", "default");
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        connected: false,
+        alreadyConnected: true,
+        message: "已连接过此 OpenClaw，无需重复连接。",
+      },
+      undefined,
+    );
+  });
+
+  it("uses the runtime default account when login wait reports already connected without an account id", async () => {
+    const loginWithQrWait = vi.fn().mockResolvedValue({
+      connected: false,
+      alreadyConnected: true,
+      message: "已连接过此 OpenClaw，无需重复连接。",
+    });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "openclaw-weixin",
+        gatewayMethods: ["web.login.wait"],
+        gateway: { loginWithQrWait },
+      },
+    ]);
+    const { context, startChannel } = createRunningWeixinContext();
+
+    await webHandlers["web.login.wait"](
+      createOptions(
+        {
+          sessionKey: "weixin-session-4",
+        },
+        {
+          req: {
+            type: "req",
+            id: "req-5",
+            method: "web.login.wait",
+            params: {
+              sessionKey: "weixin-session-4",
+            },
+          } as GatewayRequestHandlerOptions["req"],
+          context,
+        },
+      ),
+    );
+
+    expect(loginWithQrWait).toHaveBeenCalledWith({
+      accountId: undefined,
+      sessionKey: "weixin-session-4",
+      timeoutMs: undefined,
+      currentQrDataUrl: undefined,
+    });
+    expect(startChannel).toHaveBeenCalledWith("openclaw-weixin", "weixin-account-1");
   });
 });
