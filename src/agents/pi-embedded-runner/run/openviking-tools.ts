@@ -705,10 +705,12 @@ async function writeAndVerifyOpenVikingFile(params: {
   const expectedSize = Buffer.byteLength(expectedNormalized, "utf8");
   const targetName = detectTargetName(params.uri);
   const ovpack = await buildSingleFileOvpack({ uri: params.uri, content: params.content });
+  const ovpackBlobBytes = new ArrayBuffer(ovpack.bytes.byteLength);
+  new Uint8Array(ovpackBlobBytes).set(ovpack.bytes);
   const form = new FormData();
   form.append(
     "file",
-    new Blob([ovpack.bytes], { type: "application/octet-stream" }),
+    new Blob([ovpackBlobBytes], { type: "application/octet-stream" }),
     `seed-${crypto.randomUUID()}.ovpack`,
   );
   const uploadResult = await requestOpenViking<{ temp_file_id?: string }>({

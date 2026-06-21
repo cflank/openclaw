@@ -29,6 +29,7 @@ import {
   shouldStripBootstrapFromEmbeddedContext,
   shouldWarnOnOrphanedUserRepair,
   shouldSaveRuntimeOpenVikingMaterial,
+  trimSingleWorkerReportPreamble,
   wrapStreamFnRepairMalformedToolCallArguments,
   wrapStreamFnSanitizeMalformedToolCalls,
   wrapStreamFnTrimToolCallNames,
@@ -296,6 +297,35 @@ describe("shouldSaveRuntimeOpenVikingMaterial", () => {
         firstResponseStopRequested: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("trimSingleWorkerReportPreamble", () => {
+  it("keeps formal markdown report text from the first H1 title", () => {
+    expect(
+      trimSingleWorkerReportPreamble(
+        [
+          "新闻数据结果中未返回官方公告。根据规则，报告只包含标题和宏观背景。",
+          "",
+          "# Allora（ALLO/USDT）新闻报告",
+          "",
+          "## 宏观背景",
+          "美元流动性仍是主要外部变量。",
+        ].join("\n"),
+      ),
+    ).toBe("# Allora（ALLO/USDT）新闻报告\n\n## 宏观背景\n美元流动性仍是主要外部变量。");
+  });
+
+  it("does not change plain outputs without an H1 title", () => {
+    expect(trimSingleWorkerReportPreamble("  bull report\n\nfinal proposition  ")).toBe(
+      "bull report\n\nfinal proposition",
+    );
+  });
+
+  it("does not trim before non-H1 section headings", () => {
+    expect(trimSingleWorkerReportPreamble("opening note\n\n## Section\nbody")).toBe(
+      "opening note\n\n## Section\nbody",
+    );
   });
 });
 

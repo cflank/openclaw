@@ -932,7 +932,25 @@ type FinalAssistantMessageInput = Parameters<typeof resolveFinalAssistantVisible
 
 function resolveAssistantReportText(message: AgentMessage | undefined): string | undefined {
   const text = resolveFinalAssistantVisibleText(message as FinalAssistantMessageInput | undefined);
-  return text?.trim() ? text.trim() : undefined;
+  return normalizeSingleWorkerReportText(text);
+}
+
+export function trimSingleWorkerReportPreamble(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const lines = trimmed.split(/\r?\n/);
+  const titleIndex = lines.findIndex((line) => /^#\s+\S/.test(line));
+  if (titleIndex <= 0) {
+    return trimmed;
+  }
+  return lines.slice(titleIndex).join("\n").trim();
+}
+
+function normalizeSingleWorkerReportText(text: string | undefined): string | undefined {
+  const normalized = text ? trimSingleWorkerReportPreamble(text) : "";
+  return normalized ? normalized : undefined;
 }
 
 function resolveSingleWorkerReportText(params: {
@@ -948,11 +966,11 @@ function resolveSingleWorkerReportText(params: {
   if (fromLastAssistant) {
     return fromLastAssistant;
   }
-  const lastStreamText = params.assistantTexts.at(-1)?.trim();
+  const lastStreamText = normalizeSingleWorkerReportText(params.assistantTexts.at(-1));
   if (lastStreamText) {
     return lastStreamText;
   }
-  return params.assistantTexts.join("\n\n").trim();
+  return trimSingleWorkerReportPreamble(params.assistantTexts.join("\n\n"));
 }
 
 export function shouldSaveRuntimeOpenVikingMaterial(params: {
