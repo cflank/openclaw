@@ -6289,6 +6289,22 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                 systemPromptOverride: {
                   type: "string",
                 },
+                contextInjection: {
+                  anyOf: [
+                    {
+                      type: "string",
+                      const: "always",
+                    },
+                    {
+                      type: "string",
+                      const: "continuation-skip",
+                    },
+                    {
+                      type: "string",
+                      const: "never",
+                    },
+                  ],
+                },
                 agentRuntime: {
                   type: "object",
                   properties: {

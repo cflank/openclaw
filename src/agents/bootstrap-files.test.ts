@@ -501,4 +501,32 @@ describe("resolveContextInjectionMode", () => {
       } as never),
     ).toBe("continuation-skip");
   });
+
+  it("lets an agent override the default context injection mode", () => {
+    expect(
+      resolveContextInjectionMode(
+        {
+          agents: {
+            defaults: { contextInjection: "always" },
+            list: [{ id: "ui_chat", contextInjection: "never" }],
+          },
+        } as never,
+        "ui_chat",
+      ),
+    ).toBe("never");
+  });
+
+  it("uses the default mode when the selected agent has no override", () => {
+    expect(
+      resolveContextInjectionMode(
+        {
+          agents: {
+            defaults: { contextInjection: "continuation-skip" },
+            list: [{ id: "market_analyst" }],
+          },
+        } as never,
+        "market_analyst",
+      ),
+    ).toBe("continuation-skip");
+  });
 });

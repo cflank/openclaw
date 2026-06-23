@@ -224,6 +224,27 @@ describe("buildWorkspaceSkillSnapshot", () => {
     expect(snapshot.skillFilter).toEqual(["docs-search", "github"]);
   });
 
+  it("returns an empty snapshot for an explicit empty agent skill allowlist", async () => {
+    const workspaceDir = await fixtureSuite.createCaseDir("workspace");
+    await writeWorkspaceSkills(workspaceDir, [
+      { name: "github", description: "GitHub" },
+      { name: "weather", description: "Weather" },
+    ]);
+
+    const snapshot = buildSnapshot(workspaceDir, {
+      agentId: "locked-down",
+      config: {
+        agents: {
+          list: [{ id: "locked-down", skills: [] }],
+        },
+      },
+    });
+
+    expect(snapshot.prompt).toBe("");
+    expect(snapshot.skills).toEqual([]);
+    expect(snapshot.skillFilter).toEqual([]);
+  });
+
   it("limits discovery for nested repo-style skills roots (dir/skills/*)", async () => {
     const workspaceDir = await fixtureSuite.createCaseDir("workspace");
     const repoDir = await cloneTemplateDir(nestedRepoTemplateDir, "skills-repo");

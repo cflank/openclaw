@@ -81,6 +81,8 @@ export type AgentConfig = {
   agentDir?: string;
   /** Optional per-agent full system prompt replacement. */
   systemPromptOverride?: AgentDefaultsConfig["systemPromptOverride"];
+  /** Optional per-agent override for workspace bootstrap context injection. */
+  contextInjection?: AgentDefaultsConfig["contextInjection"];
   /** Optional per-agent agent runtime policy override. */
   agentRuntime?: AgentRuntimePolicyConfig;
   /** @deprecated Use agentRuntime. */

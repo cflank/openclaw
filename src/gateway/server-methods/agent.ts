@@ -389,7 +389,7 @@ function dispatchAgentRunFromGateway(params: {
   abortController: AbortController;
   respond: GatewayRequestHandlerOptions["respond"];
   context: GatewayRequestHandlerOptions["context"];
-}) {
+}): Promise<void> {
   const inputProvenance = normalizeInputProvenance(params.ingressOpts.inputProvenance);
   const shouldTrackTask =
     params.ingressOpts.sessionKey?.trim() && inputProvenance?.kind !== "inter_session";
@@ -416,7 +416,7 @@ function dispatchAgentRunFromGateway(params: {
       // Best-effort only: background task tracking must not block agent runs.
     }
   }
-  void agentCommandFromIngress(params.ingressOpts, defaultRuntime, params.context.deps)
+  return agentCommandFromIngress(params.ingressOpts, defaultRuntime, params.context.deps)
     .then((result) => {
       const aborted = result?.meta?.aborted === true;
       if (shouldTrackTask) {
@@ -903,6 +903,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       timeout?: number;
       bestEffortDeliver?: boolean;
       cleanupBundleMcpOnRunEnd?: boolean;
+      waitForCompletion?: boolean;
       label?: string;
       inputProvenance?: InputProvenance;
       workspaceDir?: string;
@@ -1615,28 +1616,32 @@ export const agentHandlers: GatewayRequestHandlers = {
       kind: "agent",
     });
 
-    const accepted = {
-      runId,
-      status: "accepted" as const,
-      acceptedAt: Date.now(),
-    };
-    // Store an in-flight ack so retries do not spawn a second run.
-    setGatewayDedupeEntry({
-      dedupe: context.dedupe,
-      key: `agent:${idem}`,
-      entry: {
-        ts: Date.now(),
-        ok: true,
-        payload: accepted,
-      },
-    });
-    respond(true, accepted, undefined, { runId });
+    if (request.waitForCompletion !== true) {
+      const accepted = {
+        runId,
+        status: "accepted" as const,
+        acceptedAt: Date.now(),
+      };
+      // Store an in-flight ack so retries do not spawn a second run.
+      setGatewayDedupeEntry({
+        dedupe: context.dedupe,
+        key: `agent:${idem}`,
+        entry: {
+          ts: Date.now(),
+          ok: true,
+          payload: accepted,
+        },
+      });
+      respond(true, accepted, undefined, { runId });
+    }
     // Give the accepted frame one event-loop turn to flush before the runner
     // starts potentially heavy synchronous prompt/context setup. The dispatch
     // is scheduled out of this request handler so immediate agent.wait calls
     // can reach the gateway before the pre-turn runner monopolizes the loop.
-    void (async () => {
-      await yieldAfterAgentAcceptedAck();
+    const dispatchPromise = (async () => {
+      if (request.waitForCompletion !== true) {
+        await yieldAfterAgentAcceptedAck();
+      }
 
       let dispatched = false;
       try {
@@ -1695,7 +1700,7 @@ export const agentHandlers: GatewayRequestHandlers = {
             ? agentId
             : undefined;
 
-        dispatchAgentRunFromGateway({
+        await dispatchAgentRunFromGateway({
           ingressOpts: {
             message,
             images,
@@ -1781,6 +1786,11 @@ export const agentHandlers: GatewayRequestHandlers = {
         }
       }
     })();
+    if (request.waitForCompletion === true) {
+      await dispatchPromise;
+    } else {
+      void dispatchPromise;
+    }
   },
   "agent.runSingleWorker": async ({ params, respond, context }) => {
     if (!validateAgentRunSingleWorkerParams(params)) {

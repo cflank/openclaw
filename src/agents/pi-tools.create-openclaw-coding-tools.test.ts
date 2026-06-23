@@ -95,6 +95,43 @@ function applyRuntimeToolsAllow<T extends { name: string }>(tools: T[], toolsAll
 describe("createOpenClawCodingTools", () => {
   const testConfig: OpenClawConfig = {};
 
+  it("skips all tool construction when an agent explicitly allows no tools", () => {
+    const stages: string[] = [];
+    const tools = createOpenClawCodingTools({
+      agentId: "ui_chat",
+      sessionKey: "agent:ui_chat:v2:ui:normal-chat",
+      config: {
+        agents: {
+          list: [{ id: "ui_chat", tools: { allow: [] } }],
+        },
+      },
+      recordToolPrepStage: (name) => stages.push(name),
+    });
+
+    expect(tools).toEqual([]);
+    expect(stages).toContain("openclaw-tools:skipped-empty-agent-allow");
+    expect(stages).not.toContain("openclaw-tools:plugin-tools");
+  });
+
+  it("skips all tool construction from the session agent when allow is explicitly empty", () => {
+    const stages: string[] = [];
+    const tools = createOpenClawCodingTools({
+      sessionKey: "agent:ui_worker_chat:v2:generic:portfolio_manager:normal-chat",
+      config: {
+        agents: {
+          list: [{ id: "ui_worker_chat", tools: { allow: [] } }],
+        },
+      },
+      recordToolPrepStage: (name) => stages.push(name),
+    });
+
+    expect(tools).toEqual([]);
+    expect(stages).toEqual([
+      "tool-policy:skipped-empty-agent-allow",
+      "openclaw-tools:skipped-empty-agent-allow",
+    ]);
+  });
+
   it("exposes gateway config and restart actions to owner sessions", () => {
     const tools = createOpenClawCodingTools({ config: testConfig, senderIsOwner: true });
     const gateway = tools.find((tool) => tool.name === "gateway");

@@ -79,8 +79,23 @@ describe("agent defaults schema", () => {
     expect(result.contextInjection).toBe("never");
   });
 
+  it("accepts per-agent contextInjection", () => {
+    const result = AgentEntrySchema.parse({
+      id: "ui_chat",
+      contextInjection: "never",
+    });
+
+    expect(result.contextInjection).toBe("never");
+  });
+
   it("rejects invalid contextInjection values", () => {
     expect(() => AgentDefaultsSchema.parse({ contextInjection: "unknown" })).toThrow();
+    expect(() =>
+      AgentEntrySchema.parse({
+        id: "ui_chat",
+        contextInjection: "unknown",
+      }),
+    ).toThrow();
   });
 
   it("accepts supported optional bootstrap filenames", () => {

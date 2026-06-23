@@ -53,7 +53,11 @@ import { resolveUserPath } from "../../../utils.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
 import { isReasoningTagProvider } from "../../../utils/provider-utils.js";
 import { resolveOpenClawAgentDir } from "../../agent-paths.js";
-import { resolveAgentWorkspaceDir, resolveSessionAgentIds } from "../../agent-scope.js";
+import {
+  resolveAgentConfig,
+  resolveAgentWorkspaceDir,
+  resolveSessionAgentIds,
+} from "../../agent-scope.js";
 import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
 import {
   analyzeBootstrapBudget,
@@ -1366,10 +1370,14 @@ export async function runEmbeddedAttempt(
     `embedded run start: runId=${params.runId} sessionId=${params.sessionId} provider=${params.provider} model=${params.modelId} thinking=${params.thinkLevel} messageChannel=${params.messageChannel ?? params.messageProvider ?? "unknown"}`,
   );
   const prepStages = createEmbeddedRunStageTracker();
+  const shouldLogUiAgentPerf =
+    params.sessionKey?.includes("agent:ui_chat:") === true ||
+    params.sessionKey?.includes(":worker-chat:") === true ||
+    params.agentId === "ui_chat";
   const emitPrepStageSummary = (phase: string) => {
     const summary = prepStages.snapshot();
     const shouldWarn = shouldWarnEmbeddedRunStageSummary(summary);
-    if (!shouldWarn && !log.isEnabled("trace")) {
+    if (!shouldWarn && !shouldLogUiAgentPerf && !log.isEnabled("trace")) {
       return;
     }
     const message = formatEmbeddedRunStageSummary(
@@ -1378,6 +1386,8 @@ export async function runEmbeddedAttempt(
     );
     if (shouldWarn) {
       log.warn(message);
+    } else if (shouldLogUiAgentPerf) {
+      log.info(message);
     } else {
       log.trace(message);
     }
@@ -1393,7 +1403,7 @@ export async function runEmbeddedAttempt(
       totalThresholdMs: 5_000,
       stageThresholdMs: 2_000,
     });
-    if (!shouldWarn && !log.isEnabled("trace")) {
+    if (!shouldWarn && !shouldLogUiAgentPerf && !log.isEnabled("trace")) {
       return;
     }
     const message = formatEmbeddedRunStageSummary(
@@ -1402,6 +1412,8 @@ export async function runEmbeddedAttempt(
     );
     if (shouldWarn) {
       log.warn(message);
+    } else if (shouldLogUiAgentPerf) {
+      log.info(message);
     } else {
       log.trace(message);
     }
@@ -1451,6 +1463,14 @@ export async function runEmbeddedAttempt(
     config: params.config,
     sessionAgentId,
   });
+  const agentToolAllow = params.config
+    ? resolveAgentConfig(params.config, sessionAgentId)?.tools?.allow
+    : undefined;
+  const agentExplicitlyDisablesTools =
+    !runtimeContext &&
+    !params.toolsAllow?.length &&
+    Array.isArray(agentToolAllow) &&
+    agentToolAllow.length === 0;
   prepStages.mark("workspace-sandbox");
 
   let restoreSkillEnv: (() => void) | undefined;
@@ -1504,7 +1524,7 @@ export async function runEmbeddedAttempt(
     prepStages.mark("skills");
 
     const sessionLabel = params.sessionKey ?? params.sessionId;
-    const contextInjectionMode = resolveContextInjectionMode(params.config);
+    const contextInjectionMode = resolveContextInjectionMode(params.config, sessionAgentId);
     const isRawModelRun = params.modelRun === true || params.promptMode === "none";
     if (isRawModelRun && log.isEnabled("debug")) {
       log.debug(
@@ -1552,7 +1572,7 @@ export async function runEmbeddedAttempt(
     };
     const corePluginToolStages = createEmbeddedRunStageTracker();
     const toolsRaw =
-      params.disableTools || isRawModelRun
+      params.disableTools || isRawModelRun || agentExplicitlyDisablesTools
         ? []
         : (() => {
             const runtimeToolAllowlist = runtimeContext
@@ -1641,6 +1661,10 @@ export async function runEmbeddedAttempt(
             corePluginToolStages.mark("attempt:tools-allow");
             return filteredTools;
           })();
+    if (agentExplicitlyDisablesTools) {
+      corePluginToolStages.mark("tool-policy:skipped-empty-agent-allow");
+      corePluginToolStages.mark("openclaw-tools:skipped-empty-agent-allow");
+    }
     prepStages.mark("core-plugin-tools");
     emitCorePluginToolStageSummary("core-plugin-tools", corePluginToolStages.snapshot());
     const toolsEnabled = supportsModelTools(params.model);
@@ -1762,9 +1786,11 @@ export async function runEmbeddedAttempt(
       cfg: params.config,
       runtimeContext,
     });
+    const runtimeToolsDisabled =
+      params.disableTools || isRawModelRun || agentExplicitlyDisablesTools;
     const bundleMcpEnabled = shouldCreateBundleMcpRuntimeForAttempt({
       toolsEnabled,
-      disableTools: params.disableTools || isRawModelRun,
+      disableTools: runtimeToolsDisabled,
       toolsAllow: params.toolsAllow,
     });
     const bundleMcpSessionRuntime = bundleMcpEnabled
@@ -1785,7 +1811,7 @@ export async function runEmbeddedAttempt(
         })
       : undefined;
     const bundleLspRuntime =
-      toolsEnabled && !isRawModelRun
+      toolsEnabled && !runtimeToolsDisabled
         ? await createBundleLspToolRuntime({
             workspaceDir: effectiveWorkspace,
             cfg: params.config,

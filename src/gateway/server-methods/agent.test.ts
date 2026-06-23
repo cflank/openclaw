@@ -522,6 +522,31 @@ describe("gateway agent handler", () => {
     expect(agentHandlers["agent.runSingleWorker"]).not.toBe(agentHandlers.agent);
   });
 
+  it("waits for the agent turn when waitForCompletion is true", async () => {
+    mocks.agentCommand.mockReset();
+    primeMainAgentRun();
+
+    const respond = await invokeAgent(
+      {
+        message: "hi",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        idempotencyKey: "idem-sync-agent",
+        waitForCompletion: true,
+      } as AgentParams,
+      { flushDispatch: false },
+    );
+
+    expect(mocks.agentCommand).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ runId: "idem-sync-agent", status: "ok" }),
+      undefined,
+      expect.objectContaining({ runId: "idem-sync-agent" }),
+    );
+  });
+
   it("rejects invalid agent.runSingleWorker params without falling back to agent", async () => {
     mocks.agentCommand.mockReset();
     const respond = await invokeAgentRunSingleWorker(

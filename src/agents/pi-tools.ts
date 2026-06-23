@@ -13,7 +13,7 @@ import {
   normalizeOptionalLowercaseString,
 } from "../shared/string-coerce.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
-import { resolveAgentConfig } from "./agent-scope.js";
+import { resolveAgentConfig, resolveAgentIdFromSessionKey } from "./agent-scope.js";
 import { createApplyPatchTool } from "./apply-patch.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { describeExecTool, describeProcessTool } from "./bash-tools.descriptions.js";
@@ -387,6 +387,16 @@ export function createOpenClawCodingTools(options?: {
     options.ownerOnlyToolAllowlist?.some((toolName) => normalizeToolName(toolName) === "cron")
       ? options.jobId.trim()
       : undefined;
+  if (
+    hasConfiguredAgentExplicitEmptyAllow(options?.config, {
+      agentId: options?.agentId,
+      sessionKey: options?.sessionKey,
+    })
+  ) {
+    options?.recordToolPrepStage?.("tool-policy:skipped-empty-agent-allow");
+    options?.recordToolPrepStage?.("openclaw-tools:skipped-empty-agent-allow");
+    return [];
+  }
   const {
     agentId,
     globalPolicy,
@@ -404,6 +414,11 @@ export function createOpenClawCodingTools(options?: {
     modelProvider: options?.modelProvider,
     modelId: options?.modelId,
   });
+  if (hasExplicitEmptyAllow(agentPolicy)) {
+    options?.recordToolPrepStage?.("tool-policy:skipped-empty-agent-allow");
+    options?.recordToolPrepStage?.("openclaw-tools:skipped-empty-agent-allow");
+    return [];
+  }
   // Prefer the already-resolved sandbox context policy. Recomputing from
   // sessionKey/config can lose the real sandbox agent when callers pass a
   // legacy alias like `main` instead of an agent session key.
@@ -841,4 +856,30 @@ export function createOpenClawCodingTools(options?: {
   // pi-ai's Anthropic OAuth transport remaps tool names to Claude Code-style names
   // on the wire and maps them back for tool dispatch.
   return withDeferredFollowupDescriptions;
+}
+
+function hasExplicitEmptyAllow(policy: { allow?: string[] } | undefined): boolean {
+  return Array.isArray(policy?.allow) && policy.allow.length === 0;
+}
+
+function hasConfiguredAgentExplicitEmptyAllow(
+  config: OpenClawConfig | undefined,
+  params: {
+    agentId?: string;
+    sessionKey?: string;
+  },
+): boolean {
+  if (!config) {
+    return false;
+  }
+  const agentId =
+    typeof params.agentId === "string" && params.agentId.trim()
+      ? params.agentId
+      : params.sessionKey
+        ? resolveAgentIdFromSessionKey(params.sessionKey)
+        : undefined;
+  if (!agentId) {
+    return false;
+  }
+  return hasExplicitEmptyAllow(resolveAgentConfig(config, agentId)?.tools);
 }

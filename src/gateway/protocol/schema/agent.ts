@@ -157,6 +157,7 @@ export const AgentParamsSchema = Type.Object(
     // Backward-compatible no-op. Older CLI clients sent this field on gateway
     // agent requests; the gateway accepts but intentionally ignores it.
     cleanupBundleMcpOnRunEnd: Type.Optional(Type.Boolean()),
+    waitForCompletion: Type.Optional(Type.Boolean()),
     modelRun: Type.Optional(Type.Boolean()),
     promptMode: Type.Optional(
       Type.Union([Type.Literal("full"), Type.Literal("minimal"), Type.Literal("none")]),
