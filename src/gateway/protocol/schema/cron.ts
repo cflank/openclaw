@@ -146,6 +146,14 @@ export const CronPayloadSchema = Type.Union([
     message: NonEmptyString,
     toolsAllow: Type.Array(Type.String()),
   }),
+  Type.Object(
+    {
+      kind: Type.Literal("toolCall"),
+      toolName: NonEmptyString,
+      input: Type.Record(Type.String(), Type.Unknown()),
+    },
+    { additionalProperties: false },
+  ),
 ]);
 
 export const CronPayloadPatchSchema = Type.Union([
@@ -160,6 +168,14 @@ export const CronPayloadPatchSchema = Type.Union([
     message: Type.Optional(NonEmptyString),
     toolsAllow: Type.Union([Type.Array(Type.String()), Type.Null()]),
   }),
+  Type.Object(
+    {
+      kind: Type.Literal("toolCall"),
+      toolName: Type.Optional(NonEmptyString),
+      input: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    },
+    { additionalProperties: false },
+  ),
 ]);
 
 export const CronFailureAlertSchema = Type.Object(

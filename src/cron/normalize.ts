@@ -166,6 +166,8 @@ function coercePayload(payload: UnknownRecord) {
     next.kind = "agentTurn";
   } else if (kindRaw === "systemevent") {
     next.kind = "systemEvent";
+  } else if (kindRaw === "toolcall") {
+    next.kind = "toolCall";
   } else if (kindRaw) {
     next.kind = kindRaw;
   }
@@ -254,6 +256,16 @@ function coercePayload(payload: UnknownRecord) {
     delete next.toolsAllow;
   } else if (next.kind === "agentTurn") {
     delete next.text;
+  } else if (next.kind === "toolCall") {
+    delete next.text;
+    delete next.message;
+    delete next.model;
+    delete next.fallbacks;
+    delete next.thinking;
+    delete next.timeoutSeconds;
+    delete next.lightContext;
+    delete next.allowUnsafeExternalContent;
+    delete next.toolsAllow;
   }
   if ("deliver" in next) {
     delete next.deliver;
@@ -572,11 +584,11 @@ export function normalizeCronJobInput(
       const kind = typeof next.payload.kind === "string" ? next.payload.kind : "";
       // Keep default behavior unchanged for backward compatibility:
       // - systemEvent defaults to "main"
-      // - agentTurn defaults to "isolated" (NOT "current", to avoid token accumulation)
+      // - agentTurn/toolCall default to "isolated" (NOT "current", to avoid token accumulation)
       // Users must explicitly specify "current" or "session:xxx" for custom session binding
       if (kind === "systemEvent") {
         next.sessionTarget = "main";
-      } else if (kind === "agentTurn") {
+      } else if (kind === "agentTurn" || kind === "toolCall") {
         next.sessionTarget = "isolated";
       }
     }

@@ -44,6 +44,54 @@ describe("CronService.getJob", () => {
     }
   });
 
+  it("runs toolCall payloads without an isolated agent turn", async () => {
+    const { storePath } = await makeStorePath();
+    const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
+    const runToolJob = vi.fn(async () => ({ status: "ok" as const, summary: "tool ok" }));
+    const cron = new CronService({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob,
+      runToolJob,
+    });
+    await cron.start();
+
+    try {
+      const added = await cron.add({
+        name: "tool-call-test",
+        enabled: true,
+        schedule: { kind: "every", everyMs: 60_000 },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: {
+          kind: "toolCall",
+          toolName: "example-tool",
+          input: { kind: "scheduled_report", cronRunId: "auto" },
+        },
+      });
+
+      const result = await cron.run(added.id, "force");
+
+      expect(result.ok).toBe(true);
+      expect(runToolJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          job: expect.objectContaining({ id: added.id }),
+          toolName: "example-tool",
+          input: expect.objectContaining({
+            kind: "scheduled_report",
+            cronRunId: expect.stringContaining(`cron:${added.id}:`),
+          }),
+        }),
+      );
+      expect(runIsolatedAgentJob).not.toHaveBeenCalled();
+    } finally {
+      cron.stop();
+    }
+  });
+
   it("preserves webhook delivery on create", async () => {
     const { storePath } = await makeStorePath();
     const cron = createCronService(storePath);

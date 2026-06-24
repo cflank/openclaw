@@ -102,10 +102,14 @@ type StartupCatchupPlan = {
 export async function executeJobCoreWithTimeout(
   state: CronServiceState,
   job: CronJob,
+  options?: {
+    cronRunId?: string;
+    onExecutionStarted?: (info?: CronAgentExecutionStarted) => void;
+  },
 ): Promise<Awaited<ReturnType<typeof executeJobCore>>> {
   const jobTimeoutMs = resolveCronJobTimeoutMs(job);
   if (typeof jobTimeoutMs !== "number") {
-    return await executeJobCore(state, job);
+    return await executeJobCore(state, job, undefined, options);
   }
 
   const runAbortController = new AbortController();
@@ -132,6 +136,7 @@ export async function executeJobCoreWithTimeout(
     startTimeout();
   };
   const corePromise = executeJobCore(state, job, runAbortController.signal, {
+    cronRunId: options?.cronRunId,
     onExecutionStarted: deferTimeoutUntilExecutionStart ? onExecutionStarted : undefined,
   });
   if (!deferTimeoutUntilExecutionStart) {
@@ -885,7 +890,8 @@ export async function onTimer(state: CronServiceState) {
       const taskRunId = tryCreateCronTaskRun({ state, job, startedAt });
 
       try {
-        const result = await executeJobCoreWithTimeout(state, job);
+        const cronRunId = taskRunId ?? createCronExecutionId(job.id, startedAt);
+        const result = await executeJobCoreWithTimeout(state, job, { cronRunId });
         return {
           jobId: id,
           job,
@@ -1220,7 +1226,8 @@ async function runStartupCatchupCandidate(
     runAtMs: startedAt,
   });
   try {
-    const result = await executeJobCoreWithTimeout(state, candidate.job);
+    const cronRunId = taskRunId ?? createCronExecutionId(candidate.job.id, startedAt);
+    const result = await executeJobCoreWithTimeout(state, candidate.job, { cronRunId });
     return {
       jobId: candidate.jobId,
       job: candidate.job,
@@ -1300,6 +1307,7 @@ export async function executeJobCore(
   job: CronJob,
   abortSignal?: AbortSignal,
   options?: {
+    cronRunId?: string;
     onExecutionStarted?: (info?: CronAgentExecutionStarted) => void;
   },
 ): Promise<
@@ -1472,6 +1480,20 @@ async function executeDetachedCronJob(
       delivery?: CronDeliveryTrace;
     }
 > {
+  if (job.payload.kind === "toolCall") {
+    if (!state.deps.runToolJob) {
+      return { status: "error", error: "cron toolCall runner unavailable" };
+    }
+    if (abortSignal?.aborted) {
+      return resolveAbortError();
+    }
+    return await state.deps.runToolJob({
+      job,
+      toolName: job.payload.toolName,
+      input: resolveToolCallInput(job.payload.input, options?.cronRunId),
+      abortSignal,
+    });
+  }
   if (job.payload.kind !== "agentTurn") {
     return { status: "skipped", error: "isolated job requires payload.kind=agentTurn" };
   }
@@ -1505,6 +1527,20 @@ async function executeDetachedCronJob(
   };
 }
 
+function resolveToolCallInput(
+  input: Record<string, unknown>,
+  cronRunId: string | undefined,
+): Record<string, unknown> {
+  if (!cronRunId) {
+    return input;
+  }
+  const current = input.cronRunId;
+  if (current !== undefined && current !== "auto") {
+    return input;
+  }
+  return { ...input, cronRunId };
+}
+
 /**
  * Execute a job. This version is used by the `run` command and other
  * places that need the full execution with state updates.
@@ -1531,7 +1567,9 @@ export async function executeJob(
   } & CronRunOutcome &
     CronRunTelemetry;
   try {
-    coreResult = await executeJobCoreWithTimeout(state, job);
+    coreResult = await executeJobCoreWithTimeout(state, job, {
+      cronRunId: createCronExecutionId(job.id, startedAt),
+    });
   } catch (err) {
     coreResult = { status: "error", error: String(err) };
   }

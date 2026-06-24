@@ -684,7 +684,9 @@ async function finishPreparedManualRun(
 
   let coreResult: Awaited<ReturnType<typeof executeJobCoreWithTimeout>>;
   try {
-    coreResult = await executeJobCoreWithTimeout(state, executionJob);
+    coreResult = await executeJobCoreWithTimeout(state, executionJob, {
+      cronRunId: taskRunId ?? createCronExecutionId(jobId, startedAt),
+    });
   } catch (err) {
     coreResult = { status: "error", error: normalizeCronRunErrorText(err) };
   }

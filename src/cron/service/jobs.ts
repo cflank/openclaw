@@ -169,8 +169,10 @@ export function assertSupportedJobSpec(job: Pick<CronJob, "sessionTarget" | "pay
   if (job.sessionTarget === "main" && job.payload.kind !== "systemEvent") {
     throw new Error('main cron jobs require payload.kind="systemEvent"');
   }
-  if (isIsolatedLike && job.payload.kind !== "agentTurn") {
-    throw new Error('isolated/current/session cron jobs require payload.kind="agentTurn"');
+  if (isIsolatedLike && job.payload.kind !== "agentTurn" && job.payload.kind !== "toolCall") {
+    throw new Error(
+      'isolated/current/session cron jobs require payload.kind="agentTurn" or "toolCall"',
+    );
   }
 }
 
@@ -704,6 +706,17 @@ function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch): CronP
     return { kind: "systemEvent", text };
   }
 
+  if (patch.kind === "toolCall") {
+    if (existing.kind !== "toolCall") {
+      return buildPayloadFromPatch(patch);
+    }
+    return {
+      kind: "toolCall",
+      toolName: typeof patch.toolName === "string" ? patch.toolName : existing.toolName,
+      input: patch.input && typeof patch.input === "object" ? patch.input : existing.input,
+    };
+  }
+
   if (existing.kind !== "agentTurn") {
     return buildPayloadFromPatch(patch);
   }
@@ -744,6 +757,17 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
       throw new Error('cron.update payload.kind="systemEvent" requires text');
     }
     return { kind: "systemEvent", text: patch.text };
+  }
+
+  if (patch.kind === "toolCall") {
+    if (typeof patch.toolName !== "string" || patch.toolName.length === 0) {
+      throw new Error('cron.update payload.kind="toolCall" requires toolName');
+    }
+    return {
+      kind: "toolCall",
+      toolName: patch.toolName,
+      input: patch.input && typeof patch.input === "object" ? patch.input : {},
+    };
   }
 
   if (typeof patch.message !== "string" || patch.message.length === 0) {

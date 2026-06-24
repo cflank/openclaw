@@ -1,4 +1,5 @@
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { resolveOpenClawPluginToolsForOptions } from "../agents/openclaw-plugin-tools.js";
 import { abortAndDrainEmbeddedPiRun } from "../agents/pi-embedded.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../browser-lifecycle-cleanup.js";
 import type { CliDeps } from "../cli/deps.types.js";
@@ -57,6 +58,30 @@ function pickDefined<T extends Record<string, unknown>>(
     }
   }
   return result;
+}
+
+function extractToolResultSummary(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") {
+    return undefined;
+  }
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string"
+    ) {
+      const text = (block as { text: string }).text.trim();
+      if (text) {
+        return text;
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Map internal CronJob to the public plugin SDK shape. */
@@ -311,6 +336,29 @@ export function buildGatewayCronService(params: {
           onWarn: (msg) => cronLogger.warn({ jobId: job.id }, msg),
         });
       }
+    },
+    runToolJob: async ({ job, toolName, input, abortSignal }) => {
+      const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
+      const sessionKey = resolveCronSessionTargetSessionKey(job.sessionTarget) ?? `cron:${job.id}`;
+      const tools = resolveOpenClawPluginToolsForOptions({
+        resolvedConfig: runtimeConfig,
+        options: {
+          config: runtimeConfig,
+          agentSessionKey: sessionKey,
+          pluginToolAllowlist: [toolName],
+          requesterAgentIdOverride: agentId,
+        },
+      });
+      const tool = tools.find((candidate) => candidate.name === toolName);
+      if (!tool) {
+        return { status: "error", error: `cron tool not available: ${toolName}` };
+      }
+      const result = await tool.execute(`cron:${job.id}:${toolName}`, input, abortSignal);
+      const summary = extractToolResultSummary(result);
+      if (result && typeof result === "object" && (result as { isError?: unknown }).isError) {
+        return { status: "error", error: summary || `cron tool failed: ${toolName}` };
+      }
+      return { status: "ok", summary: summary || `cron tool completed: ${toolName}` };
     },
     cleanupTimedOutAgentRun: async ({ job, execution }) => {
       if (!execution?.sessionId) {

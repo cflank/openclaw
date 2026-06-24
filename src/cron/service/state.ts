@@ -117,6 +117,12 @@ export type CronServiceDeps = {
     } & CronRunOutcome &
       CronRunTelemetry
   >;
+  runToolJob?: (params: {
+    job: CronJob;
+    toolName: string;
+    input: Record<string, unknown>;
+    abortSignal?: AbortSignal;
+  }) => Promise<CronRunOutcome>;
   cleanupTimedOutAgentRun?: (params: {
     job: CronJob;
     timeoutMs: number;
