@@ -296,6 +296,47 @@ describe("buildProbeTargets reason codes", () => {
     });
   });
 
+  it("does not load the full model catalog when a direct model candidate exists", async () => {
+    mockStore = {
+      version: 1,
+      profiles: {},
+      order: {},
+    };
+
+    const plan = await buildProbeTargets({
+      cfg: {
+        models: {
+          providers: {
+            deepseek: {
+              baseUrl: "https://api.deepseek.com",
+              api: "openai-completions",
+              apiKey: "sk-deepseek-test",
+              models: [],
+            },
+          },
+        },
+      } as OpenClawConfig,
+      providers: ["deepseek"],
+      modelCandidates: ["deepseek/deepseek-chat"],
+      options: {
+        timeoutMs: 5_000,
+        concurrency: 1,
+        maxTokens: 16,
+      },
+    });
+
+    expect(loadModelCatalogMock).not.toHaveBeenCalled();
+    expect(plan.results).toEqual([]);
+    expect(plan.targets).toHaveLength(1);
+    expect(plan.targets[0]).toEqual(
+      expect.objectContaining({
+        provider: "deepseek",
+        model: { provider: "deepseek", model: "deepseek-chat" },
+        source: "models.json",
+      }),
+    );
+  });
+
   it("matches canonical providers against alias-valued catalog probe models", async () => {
     await withClearedZaiEnv(async () => {
       mockStore = {

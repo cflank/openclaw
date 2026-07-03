@@ -166,6 +166,14 @@ function selectProbeModel(params: {
   return null;
 }
 
+function selectDirectProbeModel(params: {
+  provider: string;
+  candidates: Map<string, string[]>;
+}): { provider: string; model: string } | null {
+  const direct = params.candidates.get(params.provider);
+  return direct && direct.length > 0 ? { provider: params.provider, model: direct[0] } : null;
+}
+
 function mapEligibilityReasonToProbeReasonCode(
   reasonCode: AuthProfileEligibilityReasonCode,
 ): AuthProbeReasonCode {
@@ -271,8 +279,12 @@ export async function buildProbeTargets(params: {
   const providerFilterKey = providerFilter ? normalizeProviderId(providerFilter) : null;
   const profileFilter = new Set((options.profileIds ?? []).map((id) => id.trim()).filter(Boolean));
   const refResolveCache: SecretRefResolveCache = {};
-  const catalog = await loadModelCatalog({ config: cfg });
   const candidates = buildCandidateMap(modelCandidates);
+  let catalogPromise: Promise<Array<{ provider: string; id: string }>> | null = null;
+  const loadCatalog = () => {
+    catalogPromise ??= loadModelCatalog({ config: cfg });
+    return catalogPromise;
+  };
   const targets: AuthProbeTarget[] = [];
   const results: AuthProbeResult[] = [];
 
@@ -282,11 +294,14 @@ export async function buildProbeTargets(params: {
       continue;
     }
 
-    const model = selectProbeModel({
-      provider: providerKey,
-      candidates,
-      catalog,
-    });
+    let model = selectDirectProbeModel({ provider: providerKey, candidates });
+    if (!model) {
+      model = selectProbeModel({
+        provider: providerKey,
+        candidates,
+        catalog: await loadCatalog(),
+      });
+    }
 
     const profileIds = listProfilesForProvider(store, providerKey);
     const explicitOrder = (() => {
