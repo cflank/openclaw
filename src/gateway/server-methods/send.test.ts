@@ -253,6 +253,49 @@ describe("gateway send mirroring", () => {
     );
   });
 
+  it("passes skipQueue through to outbound delivery", async () => {
+    mockDeliverySuccess("m-media-no-queue");
+
+    await runSendWithClient(
+      {
+        to: "channel:C1",
+        mediaUrl: "file:///tmp/openclaw-ui-file/report.pdf",
+        channel: "slack",
+        idempotencyKey: "idem-media-no-queue",
+        skipQueue: true,
+      },
+      { connect: { scopes: ["operator.admin"] } },
+    );
+
+    expect(mocks.deliverOutboundPayloads).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skipQueue: true,
+      }),
+    );
+  });
+
+  it("rejects skipQueue for non-admin send callers", async () => {
+    mockDeliverySuccess("m-media-no-queue-rejected");
+
+    const { respond } = await runSendWithClient(
+      {
+        to: "channel:C1",
+        mediaUrl: "file:///tmp/openclaw-ui-file/report.pdf",
+        channel: "slack",
+        idempotencyKey: "idem-media-no-queue-rejected",
+        skipQueue: true,
+      },
+      { connect: { scopes: ["operator.write"] } },
+    );
+
+    expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ message: "skipQueue requires operator.admin" }),
+    );
+  });
+
   it("passes outbound session context for gateway media sends", async () => {
     mockDeliverySuccess("m-whatsapp-media");
 

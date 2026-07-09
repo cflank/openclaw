@@ -398,8 +398,18 @@ export const sendHandlers: GatewayRequestHandlers = {
       replyToId?: string;
       threadId?: string;
       sessionKey?: string;
+      skipQueue?: boolean;
       idempotencyKey: string;
     };
+    const gatewayClientScopes = client?.connect?.scopes ?? [];
+    if (request.skipQueue === true && !gatewayClientScopes.includes(ADMIN_SCOPE)) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "skipQueue requires operator.admin"),
+      );
+      return;
+    }
     const idem = request.idempotencyKey;
     const dedupeKey = `send:${idem}`;
     const inflightMap = await resolveGatewayInflightMap({ context, dedupeKey, respond });
@@ -549,7 +559,8 @@ export const sendHandlers: GatewayRequestHandlers = {
           gifPlayback: request.gifPlayback,
           threadId: outboundRoute?.threadId ?? threadId ?? null,
           deps: outboundDeps,
-          gatewayClientScopes: client?.connect?.scopes ?? [],
+          skipQueue: request.skipQueue === true ? true : undefined,
+          gatewayClientScopes,
           mirror: outboundSessionKey
             ? {
                 sessionKey: outboundSessionKey,

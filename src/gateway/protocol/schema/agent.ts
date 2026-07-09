@@ -103,6 +103,8 @@ export const SendParamsSchema = Type.Object(
     threadId: Type.Optional(Type.String()),
     /** Optional session key for mirroring delivered output back into the transcript. */
     sessionKey: Type.Optional(Type.String()),
+    /** Skip write-ahead delivery queue for one-shot media that cannot be replayed. */
+    skipQueue: Type.Optional(Type.Boolean()),
     idempotencyKey: NonEmptyString,
   },
   { additionalProperties: false },
