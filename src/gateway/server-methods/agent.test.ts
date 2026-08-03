@@ -522,6 +522,59 @@ describe("gateway agent handler", () => {
     expect(agentHandlers["agent.runSingleWorker"]).not.toBe(agentHandlers.agent);
   });
 
+  it("registers the caller supplied single-worker run id for abort", async () => {
+    await withTempDir({ prefix: "openclaw-gateway-single-worker-abort-" }, async (root) => {
+      let capturedSignal: AbortSignal | undefined;
+      let resolveRun: ((value: unknown) => void) | undefined;
+      mocks.agentCommand.mockImplementationOnce((opts: { abortSignal?: AbortSignal }) => {
+        capturedSignal = opts.abortSignal;
+        return new Promise((resolve) => {
+          resolveRun = resolve;
+          opts.abortSignal?.addEventListener(
+            "abort",
+            () => resolve({ payloads: [], meta: { durationMs: 1 } }),
+            { once: true },
+          );
+        });
+      });
+      const context = makeContext();
+      const runId = "oc-stable-single-worker-run";
+      const baseParams = buildSingleWorkerRunParams({
+        evidenceDir: `${root}/evidence`,
+        stopAfterFirstResponse: true,
+      });
+      const pending = invokeAgentRunSingleWorker(
+        {
+          ...baseParams,
+          command: {
+            ...baseParams.command,
+            openclaw_run_id: runId,
+          },
+        },
+        { context, reqId: "single-worker-abort" },
+      );
+
+      await waitForAssertion(() => {
+        expect(context.chatAbortControllers.has(runId)).toBe(true);
+      });
+      const entry = context.chatAbortControllers.get(runId);
+      expect(entry?.sessionKey).toBe(`agent:market_analyst:single-worker:${runId}`);
+      expect(capturedSignal?.aborted).toBe(false);
+
+      await chatHandlers["chat.abort"]({
+        params: { sessionKey: entry?.sessionKey, runId },
+        respond: vi.fn() as never,
+        context,
+        req: { type: "req", id: "single-worker-abort-req", method: "chat.abort" },
+        client: null,
+        isWebchatConnect: () => false,
+      });
+      expect(capturedSignal?.aborted).toBe(true);
+      resolveRun?.({ payloads: [], meta: { durationMs: 1 } });
+      await pending;
+    });
+  });
+
   it("waits for the agent turn when waitForCompletion is true", async () => {
     mocks.agentCommand.mockReset();
     primeMainAgentRun();

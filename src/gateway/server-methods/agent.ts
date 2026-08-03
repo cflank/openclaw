@@ -1807,16 +1807,34 @@ export const agentHandlers: GatewayRequestHandlers = {
       return;
     }
     const request = params as AgentRunSingleWorkerParams;
-    const openclawRunId = randomUUID();
+    const openclawRunId = request.command.openclaw_run_id ?? randomUUID();
     const sessionAgentId = normalizeAgentId(request.command.worker_id);
+    const sessionId = `single-worker-${openclawRunId}`;
+    const sessionKey = `agent:${sessionAgentId}:single-worker:${openclawRunId}`;
+    const now = Date.now();
+    const timeoutMs = resolveAgentTimeoutMs({ cfg: context.getRuntimeConfig?.() });
+    const activeRunAbort = registerChatAbortController({
+      chatAbortControllers: context.chatAbortControllers,
+      runId: openclawRunId,
+      sessionId,
+      sessionKey,
+      timeoutMs,
+      now,
+      expiresAtMs: resolveAgentRunExpiresAtMs({
+        now,
+        timeoutMs,
+      }),
+      kind: "agent",
+    });
     try {
       const runResult = await agentCommandFromIngress(
         {
           message: SINGLE_WORKER_DEFAULT_PROMPT,
           agentId: request.command.worker_id,
-          sessionId: `single-worker-${openclawRunId}`,
-          sessionKey: `agent:${sessionAgentId}:single-worker:${openclawRunId}`,
+          sessionId,
+          sessionKey,
           runId: openclawRunId,
+          abortSignal: activeRunAbort.controller.signal,
           deliver: false,
           senderIsOwner: false,
           allowModelOverride: false,
@@ -1848,6 +1866,8 @@ export const agentHandlers: GatewayRequestHandlers = {
       respond(false, payload, errorShape(ErrorCodes.UNAVAILABLE, String(err)), {
         runId: openclawRunId,
       });
+    } finally {
+      activeRunAbort.cleanup();
     }
   },
   "agent.identity.get": ({ params, respond, context }) => {

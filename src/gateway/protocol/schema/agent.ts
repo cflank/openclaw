@@ -276,6 +276,7 @@ export const SingleWorkerCommandSchema = Type.Object(
     stage: NonEmptyString,
     run_id: NonEmptyString,
     call_id: NonEmptyString,
+    openclaw_run_id: Type.Optional(NonEmptyString),
     runtime_vars: Type.Record(Type.String(), Type.String()),
     allowed_tools: Type.Array(NonEmptyString),
     upstream_materials: Type.Array(SingleWorkerMaterialReadRefSchema),
