@@ -55,6 +55,7 @@ describe("overflow compaction in run loop", () => {
         lower.includes("request_too_large") ||
         lower.includes("request size exceeds") ||
         lower.includes("context window exceeded") ||
+        lower.includes("estimated context size exceeds") ||
         lower.includes("prompt too large")
       );
     });
@@ -276,6 +277,13 @@ describe("overflow compaction in run loop", () => {
       2,
       expect.objectContaining({
         prompt: expect.stringContaining("Continue from the current transcript"),
+        toolChoice: "none",
+      }),
+    );
+    expect(mockedRunEmbeddedAttempt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        prompt: expect.stringContaining("Do not call any tool"),
       }),
     );
     expect(mockedRunEmbeddedAttempt).not.toHaveBeenNthCalledWith(
@@ -512,6 +520,42 @@ describe("overflow compaction in run loop", () => {
     expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
     expect(mockedLog.warn).toHaveBeenCalledWith(expect.stringContaining("source=assistantError"));
+    expect(result.meta.error).toBeUndefined();
+  });
+
+  it("continues from the transcript after the tool-loop context guard overflows", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          lastAssistant: {
+            stopReason: "error",
+            errorMessage:
+              "Context overflow: estimated context size exceeds safe threshold during tool loop.",
+          } as EmbeddedRunAttemptResult["lastAssistant"],
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    mockedCompactDirect.mockResolvedValueOnce(
+      makeCompactionSuccess({
+        summary: "Compacted tool-loop transcript",
+        firstKeptEntryId: "entry-5",
+        tokensBefore: 150000,
+      }),
+    );
+
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        prompt: expect.stringContaining("Continue from the current transcript"),
+      }),
+    );
+    expect(mockedRunEmbeddedAttempt).not.toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ prompt: baseParams.prompt }),
+    );
     expect(result.meta.error).toBeUndefined();
   });
 

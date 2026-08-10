@@ -7,6 +7,7 @@ import {
   buildFirstResponseEvidenceFromEvent,
   buildToolCallsEvidencePayload,
   extractToolsFromProviderPayload,
+  mergeRuntimeToolCallsEvidence,
   prependSingleWorkerProfilePromptToPrompt,
   redactSensitiveHeadersForProviderCapture,
   resolveProviderPayloadForCapture,
@@ -72,6 +73,54 @@ describe("single-worker evidence helpers", () => {
       priorOnPayload: async () => ({ tools: [{ name: "final_tool" }], messages: [] }),
     });
     expect(extractToolsFromProviderPayload(resolved)).toEqual([{ name: "final_tool" }]);
+  });
+
+  it("keeps tool calls recorded before a compacted retry", async () => {
+    const evidenceDir = await makeTempDir("openclaw-tool-calls-merge-");
+    const context = createRuntimeContext({
+      command: makeCommand(evidenceDir),
+      openclawRunId: "oc-run-tool-calls",
+    });
+    const filePath = path.join(evidenceDir, "tool-calls.json");
+    await fs.writeFile(
+      filePath,
+      JSON.stringify(
+        buildToolCallsEvidencePayload({
+          status: "recorded",
+          calls: [
+            {
+              tool_call_id: "tool-1",
+              tool_name: "claw_request_data",
+              action: "invoke",
+              status: "success",
+              result_sha256: "a".repeat(64),
+              started_at: "2026-08-09T00:00:00.000Z",
+              finished_at: "2026-08-09T00:00:01.000Z",
+            },
+          ],
+          markers: context.markers,
+        }),
+      ),
+      "utf8",
+    );
+
+    const calls = await mergeRuntimeToolCallsEvidence({
+      filePath,
+      calls: [
+        {
+          tool_call_id: "tool-2",
+          tool_name: "claw_request_data",
+          action: "invoke",
+          status: "success",
+          result_sha256: "b".repeat(64),
+          started_at: "2026-08-09T00:00:02.000Z",
+          finished_at: "2026-08-09T00:00:03.000Z",
+        },
+      ],
+      markers: context.markers,
+    });
+
+    expect(calls.map((call) => call.tool_call_id)).toEqual(["tool-1", "tool-2"]);
   });
 
   it("redacts sensitive provider headers while preserving payload tools and runtime markers", () => {

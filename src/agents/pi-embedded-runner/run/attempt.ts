@@ -616,6 +616,42 @@ export function buildToolCallsEvidencePayload(params: {
   };
 }
 
+export async function mergeRuntimeToolCallsEvidence(params: {
+  filePath: string;
+  calls: RuntimeToolCallRecord[];
+  markers: RuntimeContext["markers"];
+}): Promise<RuntimeToolCallRecord[]> {
+  let existing: unknown;
+  try {
+    existing = JSON.parse(await fs.readFile(params.filePath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [...params.calls];
+    }
+    throw error;
+  }
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+    throw new Error("existing tool-calls evidence must be an object");
+  }
+  const payload = existing as Record<string, unknown>;
+  for (const field of [
+    "run_id",
+    "call_id",
+    "worker_id",
+    "stage",
+    "profile",
+    "openclaw_run_id",
+  ] as const) {
+    if (payload[field] !== params.markers[field]) {
+      throw new Error(`existing tool-calls evidence ${field} mismatch`);
+    }
+  }
+  if (payload.source !== "model_tool_events" || !Array.isArray(payload.calls)) {
+    throw new Error("existing tool-calls evidence is invalid");
+  }
+  return [...(payload.calls as RuntimeToolCallRecord[]), ...params.calls];
+}
+
 export function resolveUnknownToolGuardThreshold(loopDetection?: {
   enabled?: boolean;
   unknownToolThreshold?: number;
@@ -1016,6 +1052,9 @@ export function prependSingleWorkerProfilePromptToPrompt(
   const basePrompt = prompt.trim();
   if (!basePrompt) {
     return renderedProfilePrompt;
+  }
+  if (basePrompt.startsWith("Continue from the current transcript after the latest tool result.")) {
+    return basePrompt;
   }
   if (isSingleWorkerDefaultPrompt(basePrompt)) {
     return renderedProfilePrompt;
@@ -2980,7 +3019,11 @@ export async function runEmbeddedAttempt(
           pendingInitialToolChoice = undefined;
           const nextOptions = {
             ...optionRecord,
-            ...(initialToolChoice ? { toolChoice: "required" } : {}),
+            ...(params.toolChoice
+              ? { toolChoice: params.toolChoice }
+              : initialToolChoice
+                ? { toolChoice: "required" }
+                : {}),
             onPayload: async (payload: unknown, providerModel: unknown) => {
               const payloadForProvider = await resolveProviderPayloadForCapture({
                 payload,
@@ -4528,15 +4571,20 @@ export async function runEmbeddedAttempt(
         if (firstResponseWritePromise) {
           firstResponsePath = await firstResponseWritePromise;
         }
-        const status: "none" | "recorded" = runtimeToolCalls.length > 0 ? "recorded" : "none";
-        toolCallsStatus = status;
         toolCallsPath = path.join(runtimeContext.evidenceDir, "tool-calls.json");
+        const allRuntimeToolCalls = await mergeRuntimeToolCallsEvidence({
+          filePath: toolCallsPath,
+          calls: runtimeToolCalls,
+          markers: runtimeContext.markers,
+        });
+        const status: "none" | "recorded" = allRuntimeToolCalls.length > 0 ? "recorded" : "none";
+        toolCallsStatus = status;
         // 每个 worker 回合最后统一落工具调用证据，控制侧 guard 只认这个结构化文件。
         await writeJsonWithRuntimeMarkers({
           filePath: toolCallsPath,
           payload: buildToolCallsEvidencePayload({
             status,
-            calls: runtimeToolCalls,
+            calls: allRuntimeToolCalls,
             markers: runtimeContext.markers,
           }),
           context: runtimeContext,

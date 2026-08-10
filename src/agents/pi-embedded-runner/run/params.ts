@@ -242,6 +242,8 @@ export type RunEmbeddedPiAgentParams = {
   clientTools?: ClientToolDefinition[];
   /** Disable built-in tools for this run (LLM-only mode). */
   disableTools?: boolean;
+  /** Keep tools visible but forbid tool calls for this attempt. */
+  toolChoice?: "none";
   provider?: string;
   model?: string;
   /** Effective model fallback chain for this session attempt. Undefined uses config defaults. */

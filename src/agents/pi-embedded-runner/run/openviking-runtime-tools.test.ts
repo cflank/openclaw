@@ -220,6 +220,14 @@ describe("single-worker runtime tool preparation", () => {
     expect(prompt).not.toContain(SINGLE_WORKER_DEFAULT_PROMPT);
   });
 
+  it("does not repeat the profile prompt when continuing a compacted tool loop", () => {
+    const continuation =
+      "Continue from the current transcript after the latest tool result. Do not rerun completed tools.";
+    expect(prependSingleWorkerProfilePromptToPrompt(continuation, "完整分析员任务")).toBe(
+      continuation,
+    );
+  });
+
   it("keeps prompt unchanged when runtimeContext is absent", () => {
     const prompt = appendSingleWorkerMaterialBriefToPrompt("原始提示词");
     expect(prompt).toBe("原始提示词");

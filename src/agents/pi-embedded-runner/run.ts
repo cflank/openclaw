@@ -150,6 +150,7 @@ import {
   resolveHookModelSelection,
 } from "./run/setup.js";
 import { mergeAttemptToolMediaPayloads } from "./run/tool-media-payloads.js";
+import { PREEMPTIVE_CONTEXT_OVERFLOW_MESSAGE } from "./tool-result-context-guard.js";
 import {
   resolveLiveToolResultMaxChars,
   sessionLikelyHasOversizedToolResults,
@@ -169,7 +170,7 @@ type ApiKeyInfo = ResolvedProviderAuth;
 const MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES = 1;
 const EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS = 30_000;
 const MID_TURN_PRECHECK_CONTINUATION_PROMPT =
-  "Continue from the current transcript after the latest tool result. Do not repeat the original user request, and do not rerun completed tools unless the transcript shows they are still needed.";
+  "Continue from the current transcript after the latest tool result. Tool execution for this turn is finished. Do not call any tool. Write the final answer from the existing transcript and state any missing-evidence limits.";
 type EmbeddedRunAttemptForRunner = Awaited<ReturnType<typeof runEmbeddedAttemptWithBackend>>;
 
 function resolveEmbeddedRunLaneTimeoutMs(timeoutMs: number): number | undefined {
@@ -1080,6 +1081,8 @@ export async function runEmbeddedPiAgent(
             imageOrder: params.imageOrder,
             clientTools: params.clientTools,
             disableTools: params.disableTools,
+            toolChoice:
+              basePrompt === MID_TURN_PRECHECK_CONTINUATION_PROMPT ? "none" : params.toolChoice,
             provider,
             modelId,
             // Use the harness selected before model/auth setup for the actual
@@ -1404,6 +1407,9 @@ export async function runEmbeddedPiAgent(
           if (contextOverflowError) {
             const overflowDiagId = createCompactionDiagId();
             const errorText = contextOverflowError.text;
+            const retryFromCurrentTranscript =
+              preflightRecovery?.source === "mid-turn" ||
+              errorText.includes(PREEMPTIVE_CONTEXT_OVERFLOW_MESSAGE);
             const msgCount = attempt.messagesSnapshot?.length ?? 0;
             const observedOverflowTokens = extractObservedOverflowTokenCount(errorText);
             log.warn(
@@ -1427,7 +1433,7 @@ export async function runEmbeddedPiAgent(
               log.warn(
                 `context overflow persisted after in-attempt compaction (attempt ${overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); retrying prompt without additional compaction for ${provider}/${modelId}`,
               );
-              if (preflightRecovery?.source === "mid-turn") {
+              if (retryFromCurrentTranscript) {
                 nextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;
               }
               continue;
@@ -1559,7 +1565,7 @@ export async function runEmbeddedPiAgent(
                 }
                 autoCompactionCount += 1;
                 log.info(`auto-compaction succeeded for ${provider}/${modelId}; retrying prompt`);
-                if (preflightRecovery?.source === "mid-turn") {
+                if (retryFromCurrentTranscript) {
                   nextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;
                 }
                 continue;
@@ -1601,7 +1607,7 @@ export async function runEmbeddedPiAgent(
                   log.info(
                     `[context-overflow-recovery] Truncated ${truncResult.truncatedCount} tool result(s); retrying prompt`,
                   );
-                  if (preflightRecovery?.source === "mid-turn") {
+                  if (retryFromCurrentTranscript) {
                     nextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;
                   }
                   continue;
